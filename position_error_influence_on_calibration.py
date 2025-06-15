@@ -217,38 +217,10 @@ class SensorCalibrationAnalyzer:
             return float("inf")
 
     def perform_calibrations(self):
-        """Perform reference and various shifted target calibrations using interpolation."""
+        """Perform calibrations using a unified method: actual data when available, interpolated otherwise."""
         ideal_base_points = [1.0, 2.0, 3.0]  # Ideal mm targets
 
-        # 1. Reference calibration using closest actual data to 1,2,3 mm
-        print("\\n--- Performing Reference Calibration (Closest Actual Data) ---")
-        ref_actual_points_dict = self._find_closest_actual_points(ideal_base_points)
-
-        # The _find_closest_actual_points returns keys as the target, which is what calculate_calibration_parameters expects
-        # For example: {1.0: {'actual_distance': 1.002, 'sensor_reading': X}, ...}
-        ref_params = self.calculate_calibration_parameters(ref_actual_points_dict)
-
-        if ref_params is None:
-            print("Failed to calculate reference_actual_data calibration parameters.")
-        else:
-            self.calibrations["reference_actual_data"] = {
-                "points": ref_actual_points_dict,  # Stores the points used, including their actual distances
-                "parameters": ref_params,
-                "type": "actual_data_points",
-                "shift_mm": 0.0,  # No shift for this type
-            }
-            print(f"Reference (actual data) calibration points:")
-            for target, point_data in ref_actual_points_dict.items():
-                print(
-                    f"  Target {target:.1f}mm -> Actual {point_data['actual_distance']:.3f}mm, Reading {point_data['sensor_reading']:.0f}"
-                )
-            print(
-                f"  Parameters: A={ref_params['A']:.2f}, B={ref_params['B']:.4f}, C={ref_params['C']:.2f}"
-            )
-
-        # 2. Systematic Target Shift Calibrations using Interpolated Sensor Readings
-        # Shifts from -500um to +500um in 100um steps
-        # np.arange arguments: start, stop (exclusive), step. Add step to stop to make it inclusive.
+        # Shifts from -500um to +500um in 100um steps, including 0
         shifts_mm = np.round(np.arange(-0.5, 0.5 + 0.1, 0.1), 3)  # in mm
 
         # Ensure data is sorted by distance for interpolation
@@ -256,105 +228,74 @@ class SensorCalibrationAnalyzer:
         xp = sorted_data["distance"].values
         fp = sorted_data["sensor_reading"].values
 
-        print("\\n--- Performing Target Shift Calibrations (Interpolated Data) ---")
+        print(
+            "\\n--- Performing Unified Calibrations (Actual Data Preferred, Interpolated When Needed) ---"
+        )
+
         for shift_mm in shifts_mm:
-            target_distances_for_interpolation = [
-                bp + shift_mm for bp in ideal_base_points
-            ]
+            target_distances = [bp + shift_mm for bp in ideal_base_points]
 
             # Check if interpolation range is valid
             if not (
-                min(target_distances_for_interpolation) >= xp.min()
-                and max(target_distances_for_interpolation) <= xp.max()
+                min(target_distances) >= xp.min() and max(target_distances) <= xp.max()
             ):
                 print(
-                    f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Skipped: Target distances [{min(target_distances_for_interpolation):.2f}, {max(target_distances_for_interpolation):.2f}] outside data range [{xp.min():.2f}, {xp.max():.2f}]."
+                    f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Skipped: Target distances [{min(target_distances):.2f}, {max(target_distances):.2f}] outside data range [{xp.min():.2f}, {xp.max():.2f}]."
                 )
-                continue  # Skip this shift if out of bounds
+                continue
 
-            interpolated_sensor_readings = np.interp(
-                target_distances_for_interpolation, xp, fp
-            )
-
-            calib_points_interpolated = {}
+            calib_points = {}
             print(
-                f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Interpolated points for calibration:"
+                f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Calibration points:"
             )
-            for i, target_dist_nominal in enumerate(
-                ideal_base_points
-            ):  # nominal are 1.0, 2.0, 3.0
-                # The 'actual_distance' here is the point at which we interpolated a sensor reading
-                actual_distance_for_sensor_reading = target_distances_for_interpolation[
-                    i
-                ]
-                sensor_reading = interpolated_sensor_readings[i]
-                calib_points_interpolated[target_dist_nominal] = {
-                    "actual_distance": actual_distance_for_sensor_reading,
+
+            for i, (nominal_target, actual_target) in enumerate(
+                zip(ideal_base_points, target_distances)
+            ):
+                # Check if we have exact actual data for this target distance
+                exact_match_mask = np.abs(self.data["distance"] - actual_target) < 1e-6
+
+                if np.any(exact_match_mask):
+                    # Use actual data point
+                    exact_idx = np.where(exact_match_mask)[0][0]
+                    actual_distance = self.data["distance"].iloc[exact_idx]
+                    sensor_reading = self.data["sensor_reading"].iloc[exact_idx]
+                    data_type = "ACTUAL"
+                else:
+                    # Use interpolated data
+                    sensor_reading = np.interp(actual_target, xp, fp)
+                    actual_distance = actual_target
+                    data_type = "INTERP"
+
+                calib_points[nominal_target] = {
+                    "actual_distance": actual_distance,
                     "sensor_reading": sensor_reading,
                 }
+
                 print(
-                    f"  Nominal Target {target_dist_nominal:.1f}mm (actual shifted target {actual_distance_for_sensor_reading:.3f}mm) -> Interpolated Reading {sensor_reading:.0f}"
+                    f"  Target {nominal_target:.1f}mm -> {actual_distance:.3f}mm, Reading {sensor_reading:.0f} [{data_type}]"
                 )
 
-            calib_params = self.calculate_calibration_parameters(
-                calib_points_interpolated
-            )
-            calib_name = f"target_shift_{shift_mm*1000:+.0f}um"
+            # Calculate calibration parameters
+            calib_params = self.calculate_calibration_parameters(calib_points)
+
+            if shift_mm == 0.0:
+                calib_name = "reference_0um"
+            else:
+                calib_name = f"shift_{shift_mm*1000:+.0f}um"
 
             if calib_params is not None:
                 self.calibrations[calib_name] = {
-                    "points": calib_points_interpolated,  # Store points used for this specific calibration
+                    "points": calib_points,
                     "parameters": calib_params,
-                    "type": "interpolated_points",
-                    "shift_mm": shift_mm,  # Store the shift in mm
+                    "type": "unified_method",
+                    "shift_mm": shift_mm,
                 }
                 print(
-                    f"  Parameters for {calib_name}: A={calib_params['A']:.2f}, B={calib_params['B']:.4f}, C={calib_params['C']:.2f}"
+                    f"  Parameters: A={calib_params['A']:.2f}, B={calib_params['B']:.4f}, C={calib_params['C']:.2f}"
                 )
             else:
-                print(
-                    f"Failed to calculate parameters for {calib_name} with shift {shift_mm:.3f}mm."
-                )
-
-        # The old offset calibrations based on self.increment are commented out as requested
-        # offsets = [-2, -1, 1, 2]  # steps
-        # for offset in offsets:
-        #     offset_distance = offset * self.increment
-        #     offset_points_targets = [p + offset_distance for p in ideal_base_points]
-        #     calib_points_actual = self._find_closest_actual_points(offset_points_targets)
-        #     # Create a new dict for calculate_calibration_parameters with ideal_base_points as keys
-        #     # and sensor readings from calib_points_actual
-        #     points_for_calc = {}
-        #     valid_points = True
-        #     temp_print_details = []
-        #     for i, ideal_target in enumerate(ideal_base_points):
-        #         actual_target_for_lookup = offset_points_targets[i]
-        #         if actual_target_for_lookup in calib_points_actual:
-        #             points_for_calc[ideal_target] = calib_points_actual[actual_target_for_lookup]
-        #             temp_print_details.append(
-        #                 f"  Target {ideal_target:.1f}mm (orig offset target {actual_target_for_lookup:.3f}mm -> actual {calib_points_actual[actual_target_for_lookup]['actual_distance']:.3f}mm, "
-        #                 f"Reading {calib_points_actual[actual_target_for_lookup]['sensor_reading']:.0f})"
-        #             )
-        #         else: # Should not happen if _find_closest_actual_points works correctly for all targets
-        #             print(f"Error: Could not find data for target {actual_target_for_lookup} in offset calibration.")
-        #             valid_points = False
-        #             break
-        #     if not valid_points:
-        #         continue
-
-        #     calib_params = self.calculate_calibration_parameters(points_for_calc)
-        #     calib_name_old_offset = f"offset_steps_{offset:+d}"
-        #     if calib_params is not None:
-        #         self.calibrations[calib_name_old_offset] = {
-        #             "points": calib_points_actual, # Store the actual points used
-        #             "parameters": calib_params,
-        #             "type": "actual_data_increment_offset",
-        #             "shift_mm": offset_distance # The overall shift in mm
-        #         }
-        #         print(f"Offset by steps {offset:+d} ({offset_distance:+.3f}mm) calibration points:")
-        #         for detail in temp_print_details:
-        #             print(detail)
-        #         print(f"  Parameters for {calib_name_old_offset}: A={calib_params['A']:.2f}, B={calib_params['B']:.4f}, C={calib_params['C']:.2f}")
+                print(f"Failed to calculate parameters for {calib_name}")
 
     def calculate_errors(self):
         """Calculate distance errors for each calibration"""
@@ -532,8 +473,6 @@ class SensorCalibrationAnalyzer:
                     f"{'':<15s} Error: Mismatch in adjusted error array length for 1-3mm stats."
                 )
 
-        # self.find_and_print_optimal_calibration() # Commented out due to AttributeError
-
     def plot_errors(self):
         """Plot error graphs for each calibration"""
         num_calibrations = len(self.errors)
@@ -605,13 +544,9 @@ class SensorCalibrationAnalyzer:
 
     def save_results(self, output_dir=".", base_filename="calibration_results"):
         """
-        Save comprehensive results to an Excel file with multiple sheets.
-        Sheets include:
-        1. Calibration Parameters: A, B, C, type, shift for each calibration.
-        2. Error Summary: RMS adjusted error (non-linearity), max original error, mean original error
-                         for all data and for the 1-3mm range.
-        3. Detailed Data: Long format table with true distance, sensor reading, and for each calibration:
-                          calculated distance, original error, adjusted error.
+        Save results organized by metrics for better comparability.
+        Creates separate sheets for each metric, showing how different position shifts affect that parameter.
+        Each sheet contains data for all calibrations to enable easy comparison.
         """
         if self.data is None or self.data.empty:
             print(
@@ -627,51 +562,34 @@ class SensorCalibrationAnalyzer:
 
         # Sanitize sheet name for use in filename
         safe_sheet_name = "".join(c if c.isalnum() else "_" for c in self.sheet_name)
-        # Ensure output_dir exists - pandas ExcelWriter might not create it.
-        # import os # Consider adding import os at the top of the file if not already present
-        # os.makedirs(output_dir, exist_ok=True)
         output_file_xlsx = f"{output_dir}/{base_filename}_{safe_sheet_name}.xlsx"
 
         print(f"Saving results for sheet '{self.sheet_name}' to {output_file_xlsx}...")
 
         try:
             with pd.ExcelWriter(output_file_xlsx, engine="openpyxl") as writer:
-                # Sheet 1: Calibration Parameters
-                params_data = []
-                for name, calib_info in self.calibrations.items():
-                    params = calib_info["parameters"]
-                    params_data.append(
-                        {
-                            "Calibration Name": name,
-                            "A": params.get("A"),
-                            "B": params.get("B"),
-                            "C": params.get("C"),
-                            "Type": calib_info.get("type"),
-                            "Shift (mm)": calib_info.get("shift_mm"),
-                        }
-                    )
-                df_params = pd.DataFrame(params_data)
-                df_params.to_excel(
-                    writer, sheet_name="Calibration Parameters", index=False
-                )
-                print("  Sheet 'Calibration Parameters' saved.")
-
-                # Sheet 2: Error Summary Statistics
-                summary_data = []
+                # Prepare data structures for metric-based organization
                 range_mask_1_3mm = (self.data["distance"] >= 1.0) & (
                     self.data["distance"] <= 3.0
                 )
 
-                for (
-                    name
-                ) in (
-                    self.calibrations.keys()
-                ):  # Iterate over names to ensure we attempt all cals
+                # Extract calibration info for organizing
+                calib_data = []
+                for name, calib_info in self.calibrations.items():
+                    params = calib_info["parameters"]
                     orig_errors = self.errors.get(name)
                     adj_errors = self.adjusted_errors.get(name)
 
-                    row_summary = {"Calibration Name": name}
+                    row_data = {
+                        "Calibration_Name": name,
+                        "Shift_mm": calib_info.get("shift_mm", np.nan),
+                        "Type": calib_info.get("type", "N/A"),
+                        "A": params.get("A", np.nan),
+                        "B": params.get("B", np.nan),
+                        "C": params.get("C", np.nan),
+                    }
 
+                    # Calculate error metrics
                     if (
                         orig_errors is not None
                         and adj_errors is not None
@@ -679,28 +597,27 @@ class SensorCalibrationAnalyzer:
                         and len(adj_errors) == len(self.data)
                     ):
 
-                        # All Data
+                        # All data metrics
                         valid_orig_all = orig_errors[~np.isnan(orig_errors)]
                         valid_adj_all = adj_errors[~np.isnan(adj_errors)]
 
-                        row_summary["RMS Adj Err (All)"] = (
+                        row_data["RMS_Adj_Err_All"] = (
                             np.sqrt(np.mean(valid_adj_all**2))
                             if len(valid_adj_all) > 0
                             else np.nan
                         )
-                        row_summary["Max Orig Err (All)"] = (
+                        row_data["Max_Orig_Err_All"] = (
                             np.max(np.abs(valid_orig_all))
                             if len(valid_orig_all) > 0
                             else np.nan
                         )
-                        row_summary["Mean Orig Err (All)"] = (
+                        row_data["Mean_Orig_Err_All"] = (
                             np.mean(valid_orig_all)
                             if len(valid_orig_all) > 0
                             else np.nan
                         )
 
-                        # 1-3mm Range - Apply range_mask_1_3mm to self.data aligned arrays
-                        # Ensure boolean indexing is safe by aligning masks with error arrays of correct length
+                        # 1-3mm range metrics
                         orig_errors_in_range_mask = range_mask_1_3mm & ~np.isnan(
                             orig_errors
                         )
@@ -711,144 +628,184 @@ class SensorCalibrationAnalyzer:
                         orig_errors_1_3 = orig_errors[orig_errors_in_range_mask]
                         adj_errors_1_3 = adj_errors[adj_errors_in_range_mask]
 
-                        row_summary["RMS Adj Err (1-3mm)"] = (
+                        row_data["RMS_Adj_Err_1_3mm"] = (
                             np.sqrt(np.mean(adj_errors_1_3**2))
                             if len(adj_errors_1_3) > 0
                             else np.nan
                         )
-                        row_summary["Max Orig Err (1-3mm)"] = (
+                        row_data["Max_Orig_Err_1_3mm"] = (
                             np.max(np.abs(orig_errors_1_3))
                             if len(orig_errors_1_3) > 0
                             else np.nan
                         )
-                        row_summary["Mean Orig Err (1-3mm)"] = (
+                        row_data["Mean_Orig_Err_1_3mm"] = (
                             np.mean(orig_errors_1_3)
                             if len(orig_errors_1_3) > 0
                             else np.nan
                         )
                     else:
+                        # Fill with NaN if data is invalid
                         for col in [
-                            "RMS Adj Err (All)",
-                            "Max Orig Err (All)",
-                            "Mean Orig Err (All)",
-                            "RMS Adj Err (1-3mm)",
-                            "Max Orig Err (1-3mm)",
-                            "Mean Orig Err (1-3mm)",
+                            "RMS_Adj_Err_All",
+                            "Max_Orig_Err_All",
+                            "Mean_Orig_Err_All",
+                            "RMS_Adj_Err_1_3mm",
+                            "Max_Orig_Err_1_3mm",
+                            "Mean_Orig_Err_1_3mm",
                         ]:
-                            row_summary[col] = np.nan
-                        if orig_errors is None or adj_errors is None:
-                            print(
-                                f"    Warning: Error data missing for '{name}' in error summary sheet."
-                            )
-                        else:  # Length mismatch
-                            print(
-                                f"    Warning: Mismatch in error array length for '{name}' (orig: {len(orig_errors if orig_errors is not None else [])}, adj: {len(adj_errors if adj_errors is not None else [])}, data: {len(self.data)}) in error summary sheet."
-                            )
-                    summary_data.append(row_summary)
+                            row_data[col] = np.nan
 
-                df_summary = pd.DataFrame(summary_data)
-                df_summary.to_excel(writer, sheet_name="Error Summary", index=False)
-                print("  Sheet 'Error Summary' saved.")
+                    calib_data.append(row_data)
 
-                # Sheet 3: Detailed Data (Long Format)
-                detailed_rows_list = []
-                # Prepare base data only once
-                base_data_for_detailed = self.data[
-                    ["distance", "sensor_reading"]
+                df_all_data = pd.DataFrame(calib_data)
+
+                # Sort by shift for better readability
+                df_all_data = df_all_data.sort_values("Shift_mm").reset_index(drop=True)
+
+                # Sheet 1: Calibration Parameters (A, B, C vs Position Shift)
+                params_sheet = df_all_data[["Shift_mm", "Type", "A", "B", "C"]].copy()
+                params_sheet.to_excel(
+                    writer, sheet_name="Parameters_vs_Shift", index=False
+                )
+                print("  Sheet 'Parameters_vs_Shift' saved.")
+
+                # Sheet 2: Non-Linearity Metrics (RMS Adjusted Errors)
+                nonlin_sheet = df_all_data[
+                    ["Shift_mm", "Type", "RMS_Adj_Err_All", "RMS_Adj_Err_1_3mm"]
                 ].copy()
-                base_data_for_detailed.rename(
+                nonlin_sheet.rename(
                     columns={
-                        "distance": "True Distance",
-                        "sensor_reading": "Sensor Reading",
+                        "RMS_Adj_Err_All": "RMS_Adjusted_Error_All_Data",
+                        "RMS_Adj_Err_1_3mm": "RMS_Adjusted_Error_1_3mm_Range",
                     },
                     inplace=True,
                 )
+                nonlin_sheet.to_excel(
+                    writer, sheet_name="NonLinearity_vs_Shift", index=False
+                )
+                print("  Sheet 'NonLinearity_vs_Shift' saved.")
 
-                for calib_name, calib_info_detail in self.calibrations.items():
-                    params_detail = calib_info_detail["parameters"]
+                # Sheet 3: Maximum Original Errors
+                max_err_sheet = df_all_data[
+                    ["Shift_mm", "Type", "Max_Orig_Err_All", "Max_Orig_Err_1_3mm"]
+                ].copy()
+                max_err_sheet.rename(
+                    columns={
+                        "Max_Orig_Err_All": "Max_Original_Error_All_Data",
+                        "Max_Orig_Err_1_3mm": "Max_Original_Error_1_3mm_Range",
+                    },
+                    inplace=True,
+                )
+                max_err_sheet.to_excel(
+                    writer, sheet_name="MaxError_vs_Shift", index=False
+                )
+                print("  Sheet 'MaxError_vs_Shift' saved.")
 
-                    # Create a fresh copy for each calibration to avoid modifying shared data
-                    current_calib_df = base_data_for_detailed.copy()
-                    current_calib_df["Calibration Name"] = calib_name
-                    current_calib_df["Shift (mm)"] = calib_info_detail.get(
-                        "shift_mm", np.nan
-                    )
-                    current_calib_df["Calibration Type"] = calib_info_detail.get(
-                        "type", "N/A"
-                    )
+                # Sheet 4: Mean Original Errors (Bias)
+                mean_err_sheet = df_all_data[
+                    ["Shift_mm", "Type", "Mean_Orig_Err_All", "Mean_Orig_Err_1_3mm"]
+                ].copy()
+                mean_err_sheet.rename(
+                    columns={
+                        "Mean_Orig_Err_All": "Mean_Original_Error_All_Data",
+                        "Mean_Orig_Err_1_3mm": "Mean_Original_Error_1_3mm_Range",
+                    },
+                    inplace=True,
+                )
+                mean_err_sheet.to_excel(
+                    writer, sheet_name="MeanError_vs_Shift", index=False
+                )
+                print("  Sheet 'MeanError_vs_Shift' saved.")
+                # Sheet 5: Summary Overview
+                summary_sheet = df_all_data[
+                    [
+                        "Calibration_Name",
+                        "Shift_mm",
+                        "Type",
+                        "RMS_Adj_Err_All",
+                        "Max_Orig_Err_All",
+                        "Mean_Orig_Err_All",
+                    ]
+                ].copy()
+                summary_sheet.rename(
+                    columns={
+                        "Calibration_Name": "Calibration_Name",
+                        "RMS_Adj_Err_All": "NonLinearity_RMS",
+                        "Max_Orig_Err_All": "Max_Error",
+                        "Mean_Orig_Err_All": "Bias",
+                    },
+                    inplace=True,
+                )
+                summary_sheet.to_excel(
+                    writer, sheet_name="Summary_Overview", index=False
+                )
+                print("  Sheet 'Summary_Overview' saved.")
 
-                    # Calculate distances for this calibration
+                # Sheet 6: Sensor Distance Readings vs True Distance for Each Calibration
+                sensor_readings_sheet_data = {
+                    "True_Distance_mm": self.data["distance"].values
+                }
+
+                for name, calib_info in self.calibrations.items():
+                    params = calib_info["parameters"]
                     calculated_distances = []
-                    for (
-                        _,
-                        data_row,
-                    ) in self.data.iterrows():  # Use self.data to ensure full alignment
-                        sensor_val = data_row["sensor_reading"]
-                        calculated_distances.append(
-                            self.calculate_distance(sensor_val, params_detail)
-                        )
-                    current_calib_df["Calculated Distance"] = calculated_distances
 
-                    # Get errors, ensuring they are numpy arrays and handle missing ones
-                    orig_errors_cal = self.errors.get(calib_name)
-                    adj_errors_cal = self.adjusted_errors.get(calib_name)
+                    for _, row in self.data.iterrows():
+                        sensor_reading = row["sensor_reading"]
+                        calc_dist = self.calculate_distance(sensor_reading, params)
+                        if calc_dist != float("inf") and not np.isnan(calc_dist):
+                            calculated_distances.append(calc_dist)
+                        else:
+                            calculated_distances.append(np.nan)
 
-                    current_calib_df["Original Error"] = (
-                        np.array(orig_errors_cal)
-                        if orig_errors_cal is not None
-                        and len(orig_errors_cal) == len(current_calib_df)
-                        else np.nan
+                    shift_info = (
+                        f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
+                        if calib_info.get("shift_mm") is not None
+                        else ""
                     )
-                    current_calib_df["Adjusted Error"] = (
-                        np.array(adj_errors_cal)
-                        if adj_errors_cal is not None
-                        and len(adj_errors_cal) == len(current_calib_df)
-                        else np.nan
-                    )
+                    col_name = f"Calc_Dist_{name}{shift_info}"
+                    sensor_readings_sheet_data[col_name] = calculated_distances
 
-                    if orig_errors_cal is None or len(orig_errors_cal) != len(
-                        current_calib_df
-                    ):
-                        print(
-                            f"    Warning: Original error data issue for '{calib_name}' in detailed data sheet."
+                sensor_readings_df = pd.DataFrame(sensor_readings_sheet_data)
+                sensor_readings_df.to_excel(
+                    writer, sheet_name="Calculated_Distances_vs_True", index=False
+                )
+                print("  Sheet 'Calculated_Distances_vs_True' saved.")
+
+                # Sheet 7: Distance Errors vs True Distance for Each Calibration
+                distance_errors_sheet_data = {
+                    "True_Distance_mm": self.data["distance"].values
+                }
+
+                for name, calib_info in self.calibrations.items():
+                    errors_arr = self.errors.get(name)
+                    if errors_arr is not None and len(errors_arr) == len(self.data):
+                        shift_info = (
+                            f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
+                            if calib_info.get("shift_mm") is not None
+                            else ""
                         )
-                    if adj_errors_cal is None or len(adj_errors_cal) != len(
-                        current_calib_df
-                    ):
-                        print(
-                            f"    Warning: Adjusted error data issue for '{calib_name}' in detailed data sheet."
+                        col_name = f"Error_{name}{shift_info}"
+                        distance_errors_sheet_data[col_name] = errors_arr
+                    else:
+                        # Fill with NaN if no valid error data
+                        shift_info = (
+                            f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
+                            if calib_info.get("shift_mm") is not None
+                            else ""
                         )
+                        col_name = f"Error_{name}{shift_info}"
+                        distance_errors_sheet_data[col_name] = [np.nan] * len(self.data)
 
-                    detailed_rows_list.append(current_calib_df)
-
-                if detailed_rows_list:
-                    df_detailed_all = pd.concat(detailed_rows_list, ignore_index=True)
-                    cols_order = [
-                        "Calibration Name",
-                        "Shift (mm)",
-                        "Calibration Type",
-                        "True Distance",
-                        "Sensor Reading",
-                        "Calculated Distance",
-                        "Original Error",
-                        "Adjusted Error",
-                    ]
-                    # Filter for columns that actually exist to prevent KeyError
-                    existing_cols_order = [
-                        col for col in cols_order if col in df_detailed_all.columns
-                    ]
-                    df_detailed_all = df_detailed_all[existing_cols_order]
-
-                    df_detailed_all.to_excel(
-                        writer, sheet_name="Detailed Data", index=False
-                    )
-                    print("  Sheet 'Detailed Data' saved.")
-                else:
-                    print("  No detailed data to save.")
+                distance_errors_df = pd.DataFrame(distance_errors_sheet_data)
+                distance_errors_df.to_excel(
+                    writer, sheet_name="Distance_Errors_vs_True", index=False
+                )
+                print("  Sheet 'Distance_Errors_vs_True' saved.")
 
             print(f"Successfully saved results to {output_file_xlsx}")
             print(
-                "Note: The 'openpyxl' library is required to write Excel files. If not installed, run: pip install openpyxl"
+                "Data organized by metrics for easy comparison across position shifts."
             )
 
         except ImportError:
@@ -858,10 +815,240 @@ class SensorCalibrationAnalyzer:
         except Exception as e:
             print(f"Error saving results to Excel: {e}")
 
+    def plot_raw_and_interpolated_data(self):
+        """Plot raw data and show interpolated points before analysis begins"""
+        if self.data is None or self.data.empty:
+            print("No data available for plotting.")
+            return
 
-# ... existing code ...
-# Make sure this method replaces the old save_results method.
-# The class definition and other methods remain the same unless specified.
+        # Create figure
+        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+
+        # Plot raw data
+        ax.scatter(
+            self.data["distance"],
+            self.data["sensor_reading"],
+            c="blue",
+            s=30,
+            alpha=0.6,
+            label="Raw Data Points",
+            zorder=3,
+        )
+
+        # Create interpolation curve for visualization
+        distance_range = np.linspace(
+            self.data["distance"].min(), self.data["distance"].max(), 500
+        )
+
+        # Ensure data is sorted for interpolation
+        sorted_data = self.data.sort_values("distance")
+        xp = sorted_data["distance"].values
+        fp = sorted_data["sensor_reading"].values
+
+        interpolated_curve = np.interp(distance_range, xp, fp)
+        ax.plot(
+            distance_range,
+            interpolated_curve,
+            "r-",
+            linewidth=2,
+            alpha=0.7,
+            label="Interpolation Curve",
+            zorder=2,
+        )
+
+        # Show calibration target points for different shifts
+        ideal_base_points = [1.0, 2.0, 3.0]
+        shifts_to_show = [-0.3, 0.0, 0.3]  # Show a few example shifts
+        colors = ["green", "orange", "purple"]
+
+        for shift_mm, color in zip(shifts_to_show, colors):
+            target_distances = [bp + shift_mm for bp in ideal_base_points]
+
+            # Check if targets are within data range
+            if min(target_distances) >= xp.min() and max(target_distances) <= xp.max():
+                interp_readings = np.interp(target_distances, xp, fp)
+
+                ax.scatter(
+                    target_distances,
+                    interp_readings,
+                    c=color,
+                    s=80,
+                    marker="s",
+                    alpha=0.8,
+                    label=f"Calib Points (shift {shift_mm*1000:+.0f}μm)",
+                    zorder=4,
+                    edgecolors="black",
+                    linewidth=1,
+                )
+
+                # Add annotations for calibration points
+                for dist, reading in zip(target_distances, interp_readings):
+                    ax.annotate(
+                        f"{dist:.1f}mm",
+                        (dist, reading),
+                        xytext=(5, 5),
+                        textcoords="offset points",
+                        fontsize=8,
+                        alpha=0.8,
+                    )
+
+        ax.set_xlabel("True Distance (mm)", fontsize=12)
+        ax.set_ylabel("Sensor Reading", fontsize=12)
+        ax.set_title(
+            f"Raw Data and Interpolation Overview - {self.sheet_name}", fontsize=14
+        )
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=10)
+
+        # Add data statistics text box
+        stats_text = f"Data Points: {len(self.data)}\\n"
+        stats_text += f'Distance Range: {self.data["distance"].min():.2f} - {self.data["distance"].max():.2f} mm\\n'
+        stats_text += f'Sensor Range: {self.data["sensor_reading"].min():.0f} - {self.data["sensor_reading"].max():.0f}\\n'
+        stats_text += f"Increment: {self.increment:.3f} mm"
+
+        ax.text(
+            0.02,
+            0.98,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+        print(f"Raw data visualization complete for '{self.sheet_name}'.")
+        print(
+            f"Green, orange, and purple squares show example calibration points for different position shifts."
+        )
+
+    def plot_nonlinearity_vs_shift(self):
+        """Plot non-linearity (RMS adjusted error) vs calibration misposition"""
+        if not self.calibrations:
+            print("No calibrations available for non-linearity plot.")
+            return
+
+        # Prepare data for plotting
+        shifts_mm = []
+        nonlinearity_all = []
+        nonlinearity_1_3mm = []
+        calib_names = []
+
+        range_mask_1_3mm = (self.data["distance"] >= 1.0) & (
+            self.data["distance"] <= 3.0
+        )
+
+        for name, calib_info in self.calibrations.items():
+            shift_mm = calib_info.get("shift_mm")
+
+            # Include all calibrations with shift information
+            if shift_mm is None:
+                continue
+
+            adj_errors = self.adjusted_errors.get(name)
+            if adj_errors is not None and len(adj_errors) == len(self.data):
+                # All data non-linearity
+                valid_adj_all = adj_errors[~np.isnan(adj_errors)]
+                if len(valid_adj_all) > 0:
+                    rms_adj_all = np.sqrt(np.mean(valid_adj_all**2))
+                else:
+                    rms_adj_all = np.nan
+
+                # 1-3mm range non-linearity
+                adj_errors_in_range_mask = range_mask_1_3mm & ~np.isnan(adj_errors)
+                adj_errors_1_3 = adj_errors[adj_errors_in_range_mask]
+                if len(adj_errors_1_3) > 0:
+                    rms_adj_1_3 = np.sqrt(np.mean(adj_errors_1_3**2))
+                else:
+                    rms_adj_1_3 = np.nan
+
+                shifts_mm.append(shift_mm * 1000)  # Convert to micrometers
+                nonlinearity_all.append(rms_adj_all)
+                nonlinearity_1_3mm.append(rms_adj_1_3)
+                calib_names.append(name)
+
+        if not shifts_mm:
+            print("No valid shift data available for non-linearity plot.")
+            return
+
+        # Sort data by shift for proper line plotting
+        sorted_indices = np.argsort(shifts_mm)
+        shifts_mm = [shifts_mm[i] for i in sorted_indices]
+        nonlinearity_all = [nonlinearity_all[i] for i in sorted_indices]
+        nonlinearity_1_3mm = [nonlinearity_1_3mm[i] for i in sorted_indices]
+        calib_names = [calib_names[i] for i in sorted_indices]
+
+        # Create the plot
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+
+        # Plot both datasets
+        ax.plot(
+            shifts_mm,
+            nonlinearity_all,
+            "o-",
+            label="All Data Range",
+            marker="o",
+            markersize=8,
+            linewidth=2,
+            alpha=0.8,
+        )
+        ax.plot(
+            shifts_mm,
+            nonlinearity_1_3mm,
+            "s-",
+            label="1-3mm Range",
+            marker="s",
+            markersize=8,
+            linewidth=2,
+            alpha=0.8,
+        )
+
+        ax.set_xlabel("Calibration Misposition (μm)", fontsize=12)
+        ax.set_ylabel("Non-Linearity (RMS Adjusted Error, mm)", fontsize=12)
+        ax.set_title(
+            f"Non-Linearity vs Calibration Misposition - {self.sheet_name}", fontsize=14
+        )
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=11)
+
+        # Add data point labels for better readability
+        for i, (shift, nl_all, nl_1_3) in enumerate(
+            zip(shifts_mm, nonlinearity_all, nonlinearity_1_3mm)
+        ):
+            if not np.isnan(nl_all):
+                ax.annotate(
+                    f"{nl_all:.3f}",
+                    (shift, nl_all),
+                    textcoords="offset points",
+                    xytext=(0, 10),
+                    ha="center",
+                    fontsize=9,
+                )
+            if not np.isnan(nl_1_3):
+                ax.annotate(
+                    f"{nl_1_3:.3f}",
+                    (shift, nl_1_3),
+                    textcoords="offset points",
+                    xytext=(0, -15),
+                    ha="center",
+                    fontsize=9,
+                )
+
+        # Improve layout
+        plt.tight_layout()
+        plt.show()
+
+        # Print summary statistics
+        print(f"\n=== Non-Linearity vs Shift Summary - {self.sheet_name} ===")
+        print(f"{'Shift (μm)':<12} {'All Data':<12} {'1-3mm Range':<12}")
+        print("-" * 40)
+        for shift, nl_all, nl_1_3 in zip(
+            shifts_mm, nonlinearity_all, nonlinearity_1_3mm
+        ):
+            print(f"{shift:+8.0f}     {nl_all:8.4f}     {nl_1_3:8.4f}")
+
 
 if __name__ == "__main__":
     # --- CONFIGURATION ---
@@ -887,6 +1074,12 @@ if __name__ == "__main__":
         analyzer = SensorCalibrationAnalyzer(excel_file_path, sheet_name)
 
         if analyzer.data is not None and not analyzer.data.empty:
+            # Plot raw data and interpolation overview first
+            print(
+                f"Displaying raw data overview for sheet '{sheet_name}'. Close the plot window to continue..."
+            )
+            analyzer.plot_raw_and_interpolated_data()
+
             # Perform calibrations
             analyzer.perform_calibrations()
 
@@ -903,6 +1096,12 @@ if __name__ == "__main__":
             )
             analyzer.plot_errors()
 
+            # Plot non-linearity vs shift
+            print(
+                f"Displaying non-linearity vs shift plot for sheet '{sheet_name}'. Close the plot window to continue..."
+            )
+            analyzer.plot_nonlinearity_vs_shift()
+
             # Save results to Excel
             # Sanitize sheet name for use in filename
             safe_sheet_name_for_file = "".join(
@@ -915,7 +1114,7 @@ if __name__ == "__main__":
                 output_dir=output_directory, base_filename=sheet_specific_base_filename
             )
 
-            print(f"\\\\nAnalysis complete for sheet '{sheet_name}'.")
+            print(f"\\nAnalysis complete for sheet '{sheet_name}'.")
             print(f"Plots were displayed.")
             print(
                 f"Results saved to an Excel file in '{output_directory}' starting with '{sheet_specific_base_filename}'."
