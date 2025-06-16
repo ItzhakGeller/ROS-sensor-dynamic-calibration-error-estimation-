@@ -1,14 +1,16 @@
+from scipy.optimize import fsolve
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import fsolve
 import os
 
 
 class SensorCalibrationAnalyzer:
-    def __init__(self, excel_file_path, sheet_name):
+    def __init__(self, excel_file_path, sheet_name, unit_column=None):
         self.excel_file = excel_file_path
         self.sheet_name = sheet_name
+        self.unit_column = unit_column  # New attribute for unit column
         self.data = self.load_excel_data()
         if self.data is not None:
             self.increment = self.detect_increment()
@@ -16,65 +18,225 @@ class SensorCalibrationAnalyzer:
             self.errors = {}
             self.adjusted_errors = {}
         else:
-            # Handle the case where data loading fails
-            print(
-                f"Warning: Data loading failed for sheet '{self.sheet_name}'. Initializing with empty/default attributes."
-            )
-            self.increment = 0.2  # Default or None
-            self.calibrations = {}  # Ensure these are initialized even if data is None
-            self.errors = {}
-            self.adjusted_errors = {}
+            print("Failed to load data.")
 
     def load_excel_data(self):
-        """Load Excel data from specified sheet, columns A,B starting from row 2"""
+        """Load Excel data - supports both raw unit columns and processed data"""
+        if self.unit_column:
+            return self.load_data_with_unit_column()
+        else:
+            return self.load_processed_data()
+
+    def load_data_with_unit_column(self):
+        """Load Excel data from 'all raw' sheet, using column A for distance and specified column for sensor data"""
         try:
-            # Read Excel file, specific sheet, skip first row (header), use columns A,B
-            df = pd.read_excel(
-                self.excel_file,
-                sheet_name=self.sheet_name,
-                skiprows=1,  # Skip first row
-                usecols=[0, 1],  # Columns A,B (0,1 in 0-indexed)
-                names=["distance", "sensor_reading"],
-            )
+            # Read the Excel file
+            df_raw = pd.read_excel(self.excel_file, sheet_name=self.sheet_name)
 
-            # Remove any rows with NaN values
-            df = df.dropna()
+            print(f"Raw data shape: {df_raw.shape}")
+            print("First few rows:")
+            print(df_raw.head())
 
-            # Sort by distance
-            df = df.sort_values("distance").reset_index(drop=True)
+            # Get sensor name from row 2 (index 1) of the specified column
+            col_index = ord(self.unit_column.upper()) - ord(
+                "A"
+            )  # Convert A,B,C,D,E to 0,1,2,3,4
 
-            print(f"Loaded {len(df)} data points from sheet '{self.sheet_name}'")
-            print(
-                f"Distance range: {df['distance'].min():.2f} - {df['distance'].max():.2f} mm"
-            )
-            print(
-                f"Sensor reading range: {df['sensor_reading'].min():.0f} - {df['sensor_reading'].max():.0f}"
-            )
-
-            # DEBUG: Print first 10 rows to verify data
-            print("\nDEBUG - First 10 data points:")
-            print("Distance | Sensor Reading")
-            print("-" * 25)
-            for i in range(min(10, len(df))):
+            if col_index < df_raw.shape[1] and len(df_raw) > 1:
+                # Read sensor name from row 2 (index 1) - the actual header row
+                sensor_name = df_raw.iloc[
+                    1, col_index
+                ]  # Row 2 contains sensor names like "43220065 ROS1"
                 print(
-                    f"{df.iloc[i]['distance']:8.3f} | {df.iloc[i]['sensor_reading']:12.0f}"
+                    f"Sensor name from header (row 2, column {self.unit_column}): {sensor_name}"
                 )
 
-            # DEBUG: Check increments
-            increments = np.diff(df["distance"].values)
-            print(f"\nDEBUG - First 10 increments: {increments[:10]}")
-            print(f"DEBUG - Median increment: {np.median(increments):.4f}")
+                # Clean the sensor name - remove any NaN or numeric artifacts
+                if (
+                    pd.isna(sensor_name)
+                    or str(sensor_name).replace(".", "").replace(",", "").isdigit()
+                ):
+                    # If we got a number instead of a name, try row 1
+                    if len(df_raw) > 0:
+                        sensor_name = df_raw.iloc[0, col_index]
+                        print(f"Trying row 1 instead: {sensor_name}")
+
+                    # If still not good, use default
+                    if (
+                        pd.isna(sensor_name)
+                        or str(sensor_name).replace(".", "").replace(",", "").isdigit()
+                    ):
+                        sensor_name = f"Sensor_{self.unit_column}"
+                        print(f"Using default name: {sensor_name}")
+
+                self.sensor_name = str(sensor_name).strip()
+            else:
+                self.sensor_name = f"Sensor_{self.unit_column}"
+                print(f"Could not read sensor name, using default: {self.sensor_name}")
+
+            # Start reading data from row 3 (index 2) onwards - skip header rows
+            data_start_row = 2
+
+            # Extract distance (column A) and sensor data (specified column B, C, D, or E)
+            distance_data = df_raw.iloc[data_start_row:, 0]  # Column A - distance
+            sensor_data = df_raw.iloc[
+                data_start_row:, col_index
+            ]  # Specified column - sensor reading
+
+            print(f"Data start row: {data_start_row}")
+            print(f"Distance data preview: {distance_data.head().values}")
+            print(f"Sensor data preview: {sensor_data.head().values}")
+
+            # Convert to numeric and remove NaN values
+            distance_numeric = pd.to_numeric(distance_data, errors="coerce")
+            sensor_numeric = pd.to_numeric(sensor_data, errors="coerce")
+
+            # Create DataFrame and remove rows with NaN values
+            df = pd.DataFrame(
+                {"distance": distance_numeric, "sensor_reading": sensor_numeric}
+            ).dropna()
+
+            # Filter to distance <= 4 as specified in the original request
+            df = df[df["distance"] <= 4].copy()
+
+            print(f"Loaded {len(df)} data points for {self.sensor_name}")
+            if len(df) > 0:
+                print(
+                    f"Distance range: {df['distance'].min():.3f} - {df['distance'].max():.3f} mm"
+                )
+                print(
+                    f"Sensor range: {df['sensor_reading'].min():.0f} - {df['sensor_reading'].max():.0f}"
+                )
 
             return df
 
         except Exception as e:
-            print(f"Error loading Excel file: {e}")
+            print(f"Error loading data: {e}")
             return None
+
+    def load_processed_data(self):
+        """Load Excel data from specified sheet, columns A,B starting from row 2"""
+        try:
+            df_raw = pd.read_excel(
+                self.excel_file, sheet_name=self.sheet_name, header=None
+            )
+
+            # Extract data starting from row 2 (index 1)
+            df_data = df_raw.iloc[1:, [0, 1]].copy()
+            df_data.columns = ["distance", "sensor_reading"]
+
+            # Convert to numeric
+            df_data["distance"] = pd.to_numeric(df_data["distance"], errors="coerce")
+            df_data["sensor_reading"] = pd.to_numeric(
+                df_data["sensor_reading"], errors="coerce"
+            )
+
+            # Remove NaN values
+            df_clean = df_data.dropna().reset_index(drop=True)
+
+            print(f"Loaded {len(df_clean)} data points from processed data")
+            return df_clean
+
+        except Exception as e:
+            print(f"Error loading processed data: {e}")
+            return None
+
+    def load_data(self):
+        """Load and process data from Excel sheet with improved structure detection"""
+        try:
+            df_raw = pd.read_excel(
+                self.excel_file, sheet_name=self.sheet_name, header=None
+            )
+            print(f"Raw data shape: {df_raw.shape}")
+
+            # Detect data start row and columns
+            data_start_row = self._detect_data_start_row(df_raw)
+            distance_col, sensor_cols = self._detect_data_columns(
+                df_raw, data_start_row
+            )
+
+            print(f"Detected data start row: {data_start_row}")
+            print(f"Detected distance column: {distance_col}")
+            print(f"Detected sensor columns: {sensor_cols}")
+
+            # Extract data
+            if data_start_row < len(df_raw) and len(sensor_cols) > 0:
+                distance_data = df_raw.iloc[data_start_row:, distance_col]
+                sensor_data = df_raw.iloc[data_start_row:, sensor_cols[0]]
+
+                # Create DataFrame
+                df = pd.DataFrame(
+                    {
+                        "distance": pd.to_numeric(distance_data, errors="coerce"),
+                        "sensor_reading": pd.to_numeric(sensor_data, errors="coerce"),
+                    }
+                )
+
+                # Clean data
+                original_count = len(df)
+                df = df.dropna().reset_index(drop=True)
+                print(
+                    f"Data cleaning: {original_count} -> {len(df)} points ({original_count - len(df)} removed)"
+                )
+
+                return df
+            else:
+                print("Could not detect valid data structure")
+                return None
+
+        except Exception as e:
+            print(f"Error in load_data: {e}")
+            return None
+
+    def _detect_data_start_row(self, df_raw):
+        """Detect which row contains the start of numeric data"""
+        for row_idx in range(min(10, len(df_raw))):
+            try:
+                first_cell = pd.to_numeric(df_raw.iloc[row_idx, 0], errors="coerce")
+                if not pd.isna(first_cell):
+                    return row_idx
+            except:
+                continue
+
+        return 0  # Default to first row
+
+    def _detect_data_columns(self, df_raw, data_start_row):
+        """Detect which columns contain distance and sensor data"""
+        if data_start_row >= len(df_raw):
+            return 0, [1]
+
+        data_portion = df_raw.iloc[
+            data_start_row : data_start_row + 50
+        ].copy()  # Look at first 50 data rows
+
+        distance_candidates = []
+        sensor_candidates = []
+
+        for col_idx in range(min(15, data_portion.shape[1])):
+            numeric_data = pd.to_numeric(data_portion.iloc[:, col_idx], errors="coerce")
+            valid_count = numeric_data.notna().sum()
+
+            if valid_count > 10:  # Need at least 10 valid points
+                unique_ratio = len(numeric_data.dropna().unique()) / valid_count
+                distance_candidates.append((col_idx, unique_ratio, valid_count))
+                sensor_candidates.append((col_idx, valid_count))
+
+        # Choose best distance column (highest uniqueness)
+        distance_col = 0  # Default to column A
+        if distance_candidates:
+            distance_col = max(distance_candidates, key=lambda x: x[1])[0]
+
+        # Choose sensor columns (prefer those with more data)
+        sensor_cols = [1]  # Default to column B
+        if sensor_candidates:
+            sensor_cols = [max(sensor_candidates, key=lambda x: x[1])[0]]
+
+        return distance_col, sensor_cols
 
     def detect_increment(self):
         """Detect data increment from the dataset"""
         if self.data is None or len(self.data) < 2:
-            return 0.2  # default
+            return 0.1  # Default increment
 
         increments = np.diff(self.data["distance"].values)
         detected_increment = round(np.median(increments), 3)
@@ -87,264 +249,348 @@ class SensorCalibrationAnalyzer:
         for target in target_distances:
             closest_idx = np.argmin(np.abs(self.data["distance"] - target))
             actual_distance = self.data["distance"].iloc[closest_idx]
-            sensor_value = self.data["sensor_reading"].iloc[closest_idx]
+            sensor_reading = self.data["sensor_reading"].iloc[closest_idx]
             calibration_points[target] = {
                 "actual_distance": actual_distance,
-                "sensor_reading": sensor_value,
+                "sensor_reading": sensor_reading,
             }
         return calibration_points
 
-    def calculate_calibration_parameters(self, points):
-        """Calculate A, B, C parameters using the exponential decay model.
-        Assumes calibration distances X1_calib, X2_calib, X3_calib are 1.0, 2.0, 3.0 respectively.
-        The 'points' argument provides the sensor readings S1, S2, S3 that correspond
-        to (potentially offset) target distances, but the A,B,C math uses X_calib=1,2,3.
+    def calculate_calibration_parameters(self, points, verbose=True):
+        """Calculate A, B, C parameters using the correct exponential decay model equations.
+
+        Model: Sensor = A + C * exp(-B * Distance)
+        Where B > 0 for decreasing ROS sensors
+          DETAILED COEFFICIENT CALCULATION PROCESS:
+        ==========================================
+
+        1. INPUT: Three sensor readings (S1, S2, S3) at distances (X1=1.0, X2=2.0, X3=3.0) mm
+
+        2. MATHEMATICAL MODEL:
+           - S1 = A + C * exp(-B * X1)  where X1 = 1.0 mm
+           - S2 = A + C * exp(-B * X2)  where X2 = 2.0 mm
+           - S3 = A + C * exp(-B * X3)  where X3 = 3.0 mm
+
+        3. COEFFICIENT B CALCULATION (CORRECTED FORMULA):
+           B = ln(((S1-S3) ± √((S1-S3)²-4*(S2-S3)*(S1-S2))) / (2*(S2-S3)))
+
+           Steps:
+           a) Calculate terms: (S1-S3), (S2-S3), (S1-S2)
+           b) Calculate discriminant: (S1-S3)² - 4*(S2-S3)*(S1-S2)
+           c) Calculate numerator: (S1-S3) ± √(discriminant)
+           d) Calculate denominator: 2*(S2-S3)
+           e) Calculate ln(numerator/denominator)
+           f) Choose the positive solution (B > 0 for ROS sensors)
+
+        4. COEFFICIENT A CALCULATION:
+           A = (S1-S3) / (exp(-B*X1) - exp(-B*X3))
+
+        5. COEFFICIENT C CALCULATION:
+           C = S2 - A*exp(-B*X2)
+
+        6. VERIFICATION:
+           Check if calculated coefficients reproduce original sensor readings
         """
         try:
-            # Extract sensor readings S1, S2, S3 from the 'points' input
-            # distances in 'points' keys are the target distances (e.g., 1.0, 2.0, 3.0 or 1.2, 2.2, 3.2 etc.)
-            sorted_target_distances = sorted(points.keys())
-            S1 = points[sorted_target_distances[0]]["sensor_reading"]
-            S2 = points[sorted_target_distances[1]]["sensor_reading"]
-            S3 = points[sorted_target_distances[2]]["sensor_reading"]
+            S1, S2, S3 = points
+            X1, X2, X3 = 1.0, 2.0, 3.0  # Fixed calibration distances
 
-            # Use fixed X values for calibration formulas as per requirement
-            X1_calib, X2_calib, X3_calib = 1.0, 2.0, 3.0
+            if verbose:
+                print(
+                    f"DEBUG: Calibration points - S1={S1:.1f}, S2={S2:.1f}, S3={S3:.1f}"
+                )
+                print(f"DEBUG: Calibration distances - X1={X1}, X2={X2}, X3={X3}")
 
-            # Primary method: B = log((S1-S2)/(S2-S3))
-            # This requires S1 > S2 > S3 for B to be real and positive.
-            val_S1_S2 = S1 - S2
-            val_S2_S3 = S2 - S3
-
-            params_calculated = False
-
-            if (
-                val_S1_S2 > 1e-9 and val_S2_S3 > 1e-9
-            ):  # Avoid division by zero and ensure S1>S2 and S2>S3
-                ratio_for_exp_neg_B = (
-                    val_S2_S3 / val_S1_S2
-                )  # This should be exp(-B * deltaX_calib), deltaX_calib=1
-                if (
-                    ratio_for_exp_neg_B > 1e-9 and ratio_for_exp_neg_B < 1.0
-                ):  # Ensures B > 0
-                    B = -np.log(ratio_for_exp_neg_B)
-
-                    denominator_A = np.exp(-B * X1_calib) - np.exp(-B * X3_calib)
-                    if abs(denominator_A) > 1e-9:
-                        A = (S1 - S3) / denominator_A
-                        C = S1 - A * np.exp(-B * X1_calib)
-                        # print(f"Debug: Primary B calc: A={A:.3f}, B={B:.6f}, C={C:.3f}")
-                        return {"A": A, "B": B, "C": C}
-                    else:
-                        print(
-                            f"Warning (Primary): Denominator for A is near zero. S1={S1:.0f},S2={S2:.0f},S3={S3:.0f}, B={B:.4f}"
-                        )
-                else:
+            # Check sensor behavior - for ROS, readings should decrease with distance
+            if S1 < S2 or S2 < S3:
+                if verbose:
                     print(
-                        f"Warning (Primary): Ratio for exp(-B) ({ratio_for_exp_neg_B:.3f}) is not between 0 and 1. S1={S1:.0f}, S2={S2:.0f}, S3={S3:.0f}."
+                        f"WARNING: Sensor readings should decrease with distance for ROS sensors!"
                     )
+                    print(
+                        f"S1={S1:.1f} at {X1}mm, S2={S2:.1f} at {X2}mm, S3={S3:.1f} at {X3}mm"
+                    )
+
+            # Use the correct equations from the attachment:
+            # B = ln(((S1-S3) ± SQRT((S1-S3)²-4*(S2-S3)*(S1-S2)))/(2*(S2-S3)))
+            term1 = S1 - S3
+            term2 = S2 - S3
+            term3 = S1 - S2
+
+            if verbose:
+                print(
+                    f"DEBUG: Terms - (S1-S3)={term1:.1f}, (S2-S3)={term2:.1f}, (S1-S2)={term3:.1f}"
+                )
+
+            # Calculate discriminant
+            discriminant = term1**2 - 4 * term2 * term3
+            if verbose:
+                print(
+                    f"DEBUG: Discriminant = {term1:.1f}² - 4*{term2:.1f}*{term3:.1f} = {discriminant:.1f}"
+                )
+
+            if discriminant < 0:
+                print(
+                    f"ERROR: Negative discriminant {discriminant:.1f} - cannot solve for B"
+                )
+                return {"A": 0, "B": 0, "C": 0}
+
+            sqrt_discriminant = np.sqrt(discriminant)
+
+            # Apply the correct formula: B = ln(((S1-S3) ± SQRT((S1-S3)²-4*(S2-S3)*(S1-S2)))/(2*(S2-S3)))
+            denominator = 2 * term2  # 2*(S2-S3)
+            if abs(denominator) < 1e-10:
+                print(f"ERROR: Denominator too small: {denominator}")
+                return {
+                    "A": 0,
+                    "B": 0,
+                    "C": 0,
+                }  # Calculate the two possible arguments for the natural logarithm
+            numerator_plus = term1 + sqrt_discriminant  # (S1-S3) + SQRT(...)
+            numerator_minus = term1 - sqrt_discriminant  # (S1-S3) - SQRT(...)
+
+            if verbose:
+                print(
+                    f"DEBUG: Numerator options: {numerator_plus:.1f}, {numerator_minus:.1f}"
+                )
+                print(f"DEBUG: Denominator: {denominator:.1f}")
+
+            # Calculate the arguments for ln() - this is the complete fraction inside ln()
+            ln_arg_plus = numerator_plus / denominator
+            ln_arg_minus = numerator_minus / denominator
+
+            if verbose:
+                print(f"DEBUG: ln() arguments: {ln_arg_plus:.6f}, {ln_arg_minus:.6f}")
+
+            # Calculate B values using the natural logarithm
+            B_plus = np.log(ln_arg_plus) if ln_arg_plus > 0 else np.nan
+            B_minus = np.log(ln_arg_minus) if ln_arg_minus > 0 else np.nan
+
+            if verbose:
+                print(f"DEBUG: B options: {B_plus:.6f}, {B_minus:.6f}")
+
+            # For decreasing ROS sensors, we want B > 0
+            if not np.isnan(B_plus) and B_plus > 0:
+                B = B_plus
+                if verbose:
+                    print(f"DEBUG: Using B_plus = {B:.6f}")
+            elif not np.isnan(B_minus) and B_minus > 0:
+                B = B_minus
+                if verbose:
+                    print(f"DEBUG: Using B_minus = {B:.6f}")
             else:
-                print(
-                    f"Warning (Primary): Sensor readings S1,S2,S3 ({S1:.0f}, {S2:.0f}, {S3:.0f}) are not suitable for primary B calculation (not strictly monotonic decreasing or S1-S2 or S2-S3 is too small)."
-                )
+                print(f"ERROR: No valid positive B found")
+                return {
+                    "A": 0,
+                    "B": 0,
+                    "C": 0,
+                }  # Calculate A using: A = (S1-S3)/(exp(-B*X1)-exp(-B*X3))
+            exp_neg_BX1 = np.exp(-B * X1)
+            exp_neg_BX3 = np.exp(-B * X3)
 
-            # Fallback method: Estimate C first, then B, then A.
-            # This method assumes (S2-C)^2 = (S1-C)(S3-C) because X_calib are equidistant.
+            print(f"DEBUG: Step 4 - Calculate A coefficient:")
+            print(f"DEBUG:   exp(-B*X1) = exp(-{B:.6f}*{X1}) = {exp_neg_BX1:.6f}")
+            print(f"DEBUG:   exp(-B*X3) = exp(-{B:.6f}*{X3}) = {exp_neg_BX3:.6f}")
+
+            denominator_A = exp_neg_BX1 - exp_neg_BX3
             print(
-                "Note: Attempting fallback parameter calculation by estimating C first."
+                f"DEBUG:   Denominator for A = {exp_neg_BX1:.6f} - {exp_neg_BX3:.6f} = {denominator_A:.6f}"
             )
-            denominator_C_est = S1 + S3 - 2 * S2
-            if abs(denominator_C_est) < 1e-9:  # Avoid division by zero
+
+            if abs(denominator_A) < 1e-10:
                 print(
-                    "Warning (Fallback): Denominator for C_est is near zero (S1, S2, S3 may be in arithmetic progression). Exponential model may not fit well."
+                    f"ERROR: Denominator for A calculation too small: {denominator_A}"
                 )
-                return None
+                return {"A": 0, "B": 0, "C": 0}
 
-            C_est = (S1 * S3 - S2 * S2) / denominator_C_est
-
-            val_S1_minus_C_est = S1 - C_est
-            val_S2_minus_C_est = S2 - C_est
-
-            if (
-                val_S1_minus_C_est <= 1e-9 or val_S2_minus_C_est <= 1e-9
-            ):  # Need S1-C > 0 and S2-C > 0 for log
-                print(
-                    f"Warning (Fallback): Estimated C ({C_est:.2f}) leads to non-positive or very small (S-C) values. S1-C={val_S1_minus_C_est:.2f}, S2-C={val_S2_minus_C_est:.2f}."
-                )
-                return None
-
-            # exp(-B*deltaX_calib) = (S2-C)/(S1-C). Here deltaX_calib = X2_calib - X1_calib = 1.
-            ratio_exp_B_fallback = val_S2_minus_C_est / val_S1_minus_C_est
-
-            if (
-                ratio_exp_B_fallback <= 1e-9 or ratio_exp_B_fallback >= 1.0
-            ):  # exp(-B) must be in (0,1) for B > 0
-                print(
-                    f"Warning (Fallback): Ratio for exp(-B) is not suitable ({ratio_exp_B_fallback:.3f}) after C estimation. S1-C={val_S1_minus_C_est:.2f}, S2-C={val_S2_minus_C_est:.2f}"
-                )
-                return None
-
-            B_fall = -np.log(ratio_exp_B_fallback)
-            # B_fall should be > 0 due to previous check.
-
-            exp_term_A_calc = np.exp(-B_fall * X1_calib)
-            if abs(exp_term_A_calc) < 1e-9:
-                print(
-                    f"Warning (Fallback): Exponential term exp(-B*X1_calib) is near zero for A calculation. B={B_fall:.4f}"
-                )
-                return None
-
-            A_fall = val_S1_minus_C_est / exp_term_A_calc
-
+            A = (S1 - S3) / denominator_A
             print(
-                f"Note: Used fallback C estimation for parameters. A={A_fall:.3f}, B={B_fall:.6f}, C={C_est:.3f}"
+                f"DEBUG: A calculation: ({S1:.1f} - {S3:.1f}) / ({exp_neg_BX1:.6f} - {exp_neg_BX3:.6f}) = {A:.3f}"
             )
-            return {"A": A_fall, "B": B_fall, "C": C_est}
+
+            # Calculate C using: C = S2 - A*exp(-B*X2)
+            exp_neg_BX2 = np.exp(-B * X2)
+            C = S2 - A * exp_neg_BX2
+            print(
+                f"DEBUG: C calculation: {S2:.1f} - {A:.3f} * {exp_neg_BX2:.6f} = {C:.3f}"
+            )
+            print(f"DEBUG: Final parameters - A={A:.3f}, B={B:.6f}, C={C:.3f}")
+
+            # Verify the calculations using CORRECT model: S = A * exp(-B * X) + C
+            S1_calc = A * np.exp(-B * X1) + C
+            S2_calc = A * np.exp(-B * X2) + C
+            S3_calc = A * np.exp(-B * X3) + C
+            print(f"DEBUG: Verification using S = A * exp(-B * X) + C:")
+            print(f"  S1: {S1:.1f} vs {S1_calc:.1f} (error: {abs(S1-S1_calc):.1f})")
+            print(f"  S2: {S2:.1f} vs {S2_calc:.1f} (error: {abs(S2-S2_calc):.1f})")
+            print(f"  S3: {S3:.1f} vs {S3_calc:.1f} (error: {abs(S3-S3_calc):.1f})")
+
+            return {"A": A, "B": B, "C": C}
 
         except Exception as e:
-            print(f"Error calculating parameters: {e}")
-            return None
+            print(f"Error calculating calibration parameters: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return {"A": 0, "B": 0, "C": 0}
 
     def calculate_distance(self, sensor_reading, params):
-        """Calculate distance from sensor reading using calibration parameters"""
+        """Calculate distance from sensor reading using calibration parameters
+
+        CORRECT Model: S = A * exp(-B * X) + C
+        Solving for X (distance): X = -ln((S - C) / A) / B
+
+        Where:
+        - S = sensor_reading (raw sensor value)
+        - A, B, C = calibration coefficients
+        - X = distance (what we want to calculate)
+        """
         try:
             A, B, C = params["A"], params["B"], params["C"]
-            if sensor_reading <= C:
-                return float("inf")  # Invalid reading
-            x = -np.log((sensor_reading - C) / A) / B
-            return x
-        except:
-            return float("inf")
+            if A == 0 or B == 0:
+                print(f"DEBUG: Invalid coefficients - A={A}, B={B}")
+                return np.nan
+
+            # Calculate the argument for the natural logarithm: (S - C) / A
+            argument = (sensor_reading - C) / A
+            if argument <= 0:
+                print(
+                    f"DEBUG: Invalid argument for ln: ({sensor_reading} - {C}) / {A} = {argument}"
+                )
+                return np.nan
+
+            # Apply the correct formula: X = -ln((S - C) / A) / B
+            distance = -np.log(argument) / B
+            return distance
+        except Exception as e:
+            return np.nan
 
     def perform_calibrations(self):
-        """Perform calibrations using a unified method: actual data when available, interpolated otherwise."""
-        ideal_base_points = [1.0, 2.0, 3.0]  # Ideal mm targets
+        """Perform calibrations with position mispositions from -500μm to +500μm."""
+        ideal_base_points = [1.0, 2.0, 3.0]  # mm targets
 
-        # Shifts from -500um to +500um in 100um steps, including 0
-        shifts_mm = np.round(np.arange(-0.5, 0.5 + 0.1, 0.1), 3)  # in mm
+        # Generate shifts from -500μm to +500μm in 100μm steps
+        shifts_mm = np.round(np.arange(-0.5, 0.5 + 0.1, 0.1), 3)
 
         # Ensure data is sorted by distance for interpolation
         sorted_data = self.data.sort_values("distance")
         xp = sorted_data["distance"].values
         fp = sorted_data["sensor_reading"].values
 
+        print(f"\nDEBUG: Data range - Distance: {xp.min():.3f} to {xp.max():.3f} mm")
+        print(f"DEBUG: Data range - Sensor: {fp.min():.0f} to {fp.max():.0f}")
+        print(f"DEBUG: Data points: {len(xp)}")
+
         print(
-            "\\n--- Performing Unified Calibrations (Actual Data Preferred, Interpolated When Needed) ---"
+            f"\n--- Performing Calibrations with Position Mispositions from -500μm to +500μm ---"
         )
+        print(f"DEBUG: Shift values: {shifts_mm*1000} μm")
+
+        # Initialize storage for raw calibration data
+        self.raw_calibration_data = []
 
         for shift_mm in shifts_mm:
-            target_distances = [bp + shift_mm for bp in ideal_base_points]
+            target_distances = [p + shift_mm for p in ideal_base_points]
 
-            # Check if interpolation range is valid
-            if not (
-                min(target_distances) >= xp.min() and max(target_distances) <= xp.max()
-            ):
-                print(
-                    f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Skipped: Target distances [{min(target_distances):.2f}, {max(target_distances):.2f}] outside data range [{xp.min():.2f}, {xp.max():.2f}]."
-                )
-                continue
-
-            calib_points = {}
             print(
-                f"Shift {shift_mm*1000:+.0f}um ({shift_mm:.3f}mm) - Calibration points:"
+                f"\nDEBUG: Shift {shift_mm*1000:+.0f}μm - Target distances: {target_distances}"
             )
 
-            for i, (nominal_target, actual_target) in enumerate(
-                zip(ideal_base_points, target_distances)
-            ):
-                # Check if we have exact actual data for this target distance
-                exact_match_mask = np.abs(self.data["distance"] - actual_target) < 1e-6
+            # Check if target distances are within data range
+            for i, target in enumerate(target_distances):
+                if target < xp.min() or target > xp.max():
+                    print(
+                        f"WARNING: Target distance {target:.3f} mm is outside data range!"
+                    )  # Use interpolation to get sensor readings for target distances
+            sensor_readings = np.interp(target_distances, xp, fp)
 
-                if np.any(exact_match_mask):
-                    # Use actual data point
-                    exact_idx = np.where(exact_match_mask)[0][0]
-                    actual_distance = self.data["distance"].iloc[exact_idx]
-                    sensor_reading = self.data["sensor_reading"].iloc[exact_idx]
-                    data_type = "ACTUAL"
-                else:
-                    # Use interpolated data
-                    sensor_reading = np.interp(actual_target, xp, fp)
-                    actual_distance = actual_target
-                    data_type = "INTERP"
-
-                calib_points[nominal_target] = {
-                    "actual_distance": actual_distance,
-                    "sensor_reading": sensor_reading,
-                }
-
-                print(
-                    f"  Target {nominal_target:.1f}mm -> {actual_distance:.3f}mm, Reading {sensor_reading:.0f} [{data_type}]"
-                )
-
+            if shift_mm == 0.0:  # Only show detailed output for reference calibration
+                print(f"DEBUG: Interpolated sensor readings: {sensor_readings}")
             # Calculate calibration parameters
-            calib_params = self.calculate_calibration_parameters(calib_points)
-
-            if shift_mm == 0.0:
-                calib_name = "reference_0um"
-            else:
-                calib_name = f"shift_{shift_mm*1000:+.0f}um"
-
-            if calib_params is not None:
-                self.calibrations[calib_name] = {
-                    "points": calib_points,
-                    "parameters": calib_params,
-                    "type": "unified_method",
-                    "shift_mm": shift_mm,
-                }
-                print(
-                    f"  Parameters: A={calib_params['A']:.2f}, B={calib_params['B']:.4f}, C={calib_params['C']:.2f}"
+            if shift_mm == 0.0:  # Only show detailed output for reference calibration
+                params = self.calculate_calibration_parameters(
+                    sensor_readings, verbose=True
                 )
             else:
-                print(f"Failed to calculate parameters for {calib_name}")
+                params = self.calculate_calibration_parameters(
+                    sensor_readings, verbose=False
+                )
+
+            # Store raw calibration data used for coefficient calculation
+            raw_data_entry = {
+                "Calibration": f"shift_{int(round(shift_mm * 1000)):+d}um",
+                "Distance_1mm": target_distances[0],
+                "Sensor_Reading_1mm": sensor_readings[0],
+                "Distance_2mm": target_distances[1],
+                "Sensor_Reading_2mm": sensor_readings[1],
+                "Distance_3mm": target_distances[2],
+                "Sensor_Reading_3mm": sensor_readings[2],
+                "A_Coefficient": params["A"],
+                "B_Coefficient": params["B"],
+                "C_Coefficient": params["C"],
+                "Notes": f"Raw sensor readings at exactly {target_distances[0]:.1f}, {target_distances[1]:.1f}, {target_distances[2]:.1f} mm used to calculate A, B, C coefficients",
+            }
+            self.raw_calibration_data.append(raw_data_entry)
+
+            # Only show detailed test for reference calibration
+            if shift_mm == 0.0:
+                print("DEBUG: Testing calibration accuracy:")
+                for i, (target_dist, sensor_reading) in enumerate(
+                    zip(target_distances, sensor_readings)
+                ):
+                    predicted_dist = self.calculate_distance(sensor_reading, params)
+                    error = predicted_dist - target_dist
+                    print(
+                        f"  Point {i+1}: Target={target_dist:.3f}, Sensor={sensor_reading:.0f}, Predicted={predicted_dist:.3f}, Error={error:.6f}"
+                    )
+
+            # Store calibration
+            shift_um = int(round(shift_mm * 1000))
+            calib_name = f"shift_{shift_um:+d}um"
+            self.calibrations[calib_name] = {
+                "params": params,
+                "target_distances": target_distances,
+                "sensor_readings": sensor_readings,
+                "shift_mm": shift_mm,
+            }
+
+            print(
+                f"Calibration '{calib_name}': A={params['A']:.2f}, B={params['B']:.6f}, C={params['C']:.2f}"
+            )
 
     def calculate_errors(self):
         """Calculate distance errors for each calibration"""
         for calib_name, calib_data in self.calibrations.items():
-            params = calib_data["parameters"]
-            errors_list = []
+            params = calib_data["params"]
 
-            for _, row in self.data.iterrows():
-                true_distance = row["distance"]
-                sensor_reading = row["sensor_reading"]
-                calculated_distance = self.calculate_distance(sensor_reading, params)
+            # Calculate predicted distances for all sensor readings
+            predicted_distances = []
+            for sensor_reading in self.data["sensor_reading"]:
+                pred_dist = self.calculate_distance(sensor_reading, params)
+                predicted_distances.append(pred_dist)
 
-                if calculated_distance != float("inf") and not np.isnan(
-                    calculated_distance
-                ):
-                    error = calculated_distance - true_distance
-                    errors_list.append(error)
-                else:
-                    errors_list.append(
-                        np.nan
-                    )  # Append NaN if distance calculation is invalid
+            predicted_distances = np.array(predicted_distances)
+            actual_distances = self.data["distance"].values
 
-            self.errors[calib_name] = np.array(errors_list)
+            # Calculate errors
+            errors = predicted_distances - actual_distances
 
-            # Calculate adjusted errors (subtract mean of original error)
-            current_original_errors = np.array(errors_list)  # Ensure it's a numpy array
+            # Store original errors
+            self.errors[calib_name] = errors
 
-            adjusted_error_values = np.full_like(
-                current_original_errors, np.nan, dtype=np.float64
-            )
-
-            # Only operate on non-NaN original errors to calculate mean and subtract
-            valid_original_errors_mask = ~np.isnan(current_original_errors)
-            if np.any(valid_original_errors_mask):
-                mean_original_error = np.nanmean(
-                    current_original_errors[valid_original_errors_mask]
-                )
-                adjusted_error_values[valid_original_errors_mask] = (
-                    current_original_errors[valid_original_errors_mask]
-                    - mean_original_error
-                )
-
-            self.adjusted_errors[calib_name] = adjusted_error_values
+            # Calculate adjusted errors (remove mean bias)
+            mean_error = np.nanmean(errors)
+            adjusted_errors = errors - mean_error
+            self.adjusted_errors[calib_name] = adjusted_errors
 
     def print_results(self):
         """Print calibration parameters and error statistics"""
-        print(f"\n=== SENSOR CALIBRATION ANALYSIS - {self.sheet_name} ===\n")
+        sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
+        print(f"\n=== SENSOR CALIBRATION ANALYSIS - {sensor_display_name} ===\n")
         print(f"Excel file: {self.excel_file}")
         print(f"Sheet: {self.sheet_name}")
+        if hasattr(self, "unit_column"):
+            print(f"Column: {self.unit_column}")
         print(f"Data increment detected: {self.increment} mm\n")
 
         print("Calibration Parameters:")
@@ -352,9 +598,9 @@ class SensorCalibrationAnalyzer:
         print(f"{'Calibration':<15s} {'A':<15s} {'B':<12s} {'C':<15s}")
         print("-" * 70)
         for name, calib in self.calibrations.items():
-            params = calib["parameters"]
+            params = calib["params"]
             print(
-                f"{name:<15s} {params['A']:15.2f} {params['B']:12.6f} {params['C']:15.2f}"
+                f"{name:<15s} {params['A']:<15.3f} {params['B']:<12.6f} {params['C']:<15.3f}"
             )
 
         # Modified Error Statistics section to show Non-Linearity (RMS of Adjusted Error)
@@ -366,176 +612,104 @@ class SensorCalibrationAnalyzer:
         print("-" * 80)  # Adjusted width
 
         for name, errors_arr in self.errors.items():
-            # Original Error Stats for Max and Mean
-            valid_errors_all = errors_arr[~np.isnan(errors_arr)]
-            max_error_all_str = "N/A"
-            mean_error_all_str = "N/A"
-            if len(valid_errors_all) > 0:
-                max_error_all_str = f"{np.max(np.abs(valid_errors_all)):.4f}"
-                mean_error_all_str = f"{np.mean(valid_errors_all):.4f}"
+            adj_errors_arr = self.adjusted_errors[name]
 
-            # Adjusted Error Stats for Non-Linearity Score (RMS Adj Err)
-            adj_errors_arr_for_name = self.adjusted_errors.get(name)
-            rms_adj_error_all_str = "N/A"
-            if adj_errors_arr_for_name is not None:
-                valid_adj_errors_all = adj_errors_arr_for_name[
-                    ~np.isnan(adj_errors_arr_for_name)
-                ]
-                if len(valid_adj_errors_all) > 0:
-                    rms_adj_error_all_str = (
-                        f"{np.sqrt(np.mean(valid_adj_errors_all**2)):.4f}"
-                    )
+            # Non-linearity is RMS of adjusted errors
+            nonlinearity = np.sqrt(np.nanmean(adj_errors_arr**2))
+
+            # Original error statistics
+            max_orig_err = np.nanmax(np.abs(errors_arr))
+            mean_orig_err = np.nanmean(errors_arr)
 
             print(
-                f"{name:<20s} {rms_adj_error_all_str:<22s} {max_error_all_str:<18s} {mean_error_all_str:<18s} (all data)"
+                f"{name:<20s} {nonlinearity:<22.6f} {max_orig_err:<18.6f} {mean_orig_err:<18.6f}"
             )
 
-            # --- Statistics for 1-3mm range ---
-            range_mask = (self.data["distance"] >= 1.0) & (self.data["distance"] <= 3.0)
-
-            # Original Error Stats for 1-3mm (Max and Mean)
-            max_error_1_3_str = "N/A"
-            mean_error_1_3_str = "N/A"
-            if len(errors_arr) == len(self.data):  # Check alignment
-                errors_in_range_mask = range_mask & ~np.isnan(errors_arr)
-                errors_in_range = errors_arr[errors_in_range_mask]
-                if len(errors_in_range) > 0:
-                    max_error_1_3_str = f"{np.max(np.abs(errors_in_range)):.4f}"
-                    mean_error_1_3_str = f"{np.mean(errors_in_range):.4f}"
-
-            # Adjusted Error Stats for 1-3mm (Non-Linearity Score)
-            rms_adj_error_1_3_str = "N/A"
-            if adj_errors_arr_for_name is not None and len(
-                adj_errors_arr_for_name
-            ) == len(
-                self.data
-            ):  # Check alignment
-                adj_errors_in_range_mask = range_mask & ~np.isnan(
-                    adj_errors_arr_for_name
-                )
-                adj_errors_in_range = adj_errors_arr_for_name[adj_errors_in_range_mask]
-                if len(adj_errors_in_range) > 0:
-                    rms_adj_error_1_3_str = (
-                        f"{np.sqrt(np.mean(adj_errors_in_range**2)):.4f}"
-                    )
-
-            if len(errors_arr) == len(self.data):
-                print(
-                    f"{'':<20s} {rms_adj_error_1_3_str:<22s} {max_error_1_3_str:<18s} {mean_error_1_3_str:<18s} (1-3mm range)"
-                )
-            else:
-                print(
-                    f"{'':<20s} {'Error: Mismatch in error array length for 1-3mm stats.':<68s}"
-                )
-
-        print(f"\\nAdjusted Error Statistics (Original Error - Mean Original Error):")
+        print(f"\nAdjusted Error Statistics (Original Error - Mean Original Error):")
         print("-" * 70)
         print(
             f"{'Calibration':<15s} {'RMS Error':<12s} {'Max Error':<12s} {'Mean Error':<12s}"
         )
         print("-" * 70)
         for name, adj_errors_arr in self.adjusted_errors.items():
-            # --- Overall Statistics (Adjusted Error) ---
-            valid_adj_errors_all = adj_errors_arr[~np.isnan(adj_errors_arr)]
-            if len(valid_adj_errors_all) > 0:
-                rms_adj_error_all = np.sqrt(np.mean(valid_adj_errors_all**2))
-                max_adj_error_all = np.max(np.abs(valid_adj_errors_all))
-                mean_adj_error_all = np.mean(
-                    valid_adj_errors_all
-                )  # Should be close to 0
-                print(
-                    f"{name:<15s} {rms_adj_error_all:<12.4f} {max_adj_error_all:<12.4f} {mean_adj_error_all:<12.4f} (all data)"
-                )
-            else:
-                print(
-                    f"{name:<15s} {'N/A':<12s} {'N/A':<12s} {'N/A':<12s} (all data, no valid errors)"
-                )
+            rms_error = np.sqrt(np.nanmean(adj_errors_arr**2))
+            max_error = np.nanmax(np.abs(adj_errors_arr))
+            mean_error = np.nanmean(adj_errors_arr)
 
-            # --- Statistics for 1-3mm range (Adjusted Error) ---
-            # range_mask is already defined
-            if len(adj_errors_arr) == len(self.data):
-                adj_errors_in_range_mask = range_mask & ~np.isnan(adj_errors_arr)
-                adj_errors_in_range = adj_errors_arr[adj_errors_in_range_mask]
-
-                if len(adj_errors_in_range) > 0:
-                    rms_adj_error_1_3 = np.sqrt(np.mean(adj_errors_in_range**2))
-                    max_adj_error_1_3 = np.max(np.abs(adj_errors_in_range))
-                    mean_adj_error_1_3 = np.mean(adj_errors_in_range)
-                    print(
-                        f"{'':<15s} {rms_adj_error_1_3:<12.4f} {max_adj_error_1_3:<12.4f} {mean_adj_error_1_3:<12.4f} (1-3mm range)"
-                    )
-                else:
-                    print(
-                        f"{'':<15s} {'N/A':<12s} {'N/A':<12s} {'N/A':<12s} (1-3mm range, no valid data)"
-                    )
-            else:
-                print(
-                    f"{'':<15s} Error: Mismatch in adjusted error array length for 1-3mm stats."
-                )
+            print(
+                f"{name:<15s} {rms_error:<12.6f} {max_error:<12.6f} {mean_error:<12.6f}"
+            )
 
     def plot_errors(self):
-        """Plot error graphs for each calibration"""
+        """Plot predicted distance vs true distance and prediction errors"""
         num_calibrations = len(self.errors)
         if num_calibrations == 0:
-            print("No error data to plot.")
+            print("No calibration data available for plotting.")
             return
+
+        sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
 
         fig, axs = plt.subplots(2, 1, figsize=(14, 12), sharex=True)
         # Use a colormap that provides distinct colors for many lines
         num_unique_calibs = len(self.calibrations)
         colors = plt.cm.nipy_spectral(np.linspace(0, 1, max(10, num_unique_calibs)))
 
-        # Plot 1: Original Errors
+        # Plot 1: Predicted Distance vs True Distance
         ax1 = axs[0]
-        for i, (name, errors_arr) in enumerate(self.errors.items()):
-            # Ensure errors_arr is aligned with self.data["distance"]
-            if len(errors_arr) == len(self.data["distance"]):
-                valid_mask = ~np.isnan(errors_arr)
-                if np.sum(valid_mask) > 0:  # Check if there's any valid data to plot
-                    ax1.plot(
-                        self.data["distance"][valid_mask],
-                        errors_arr[valid_mask],
-                        label=name,
-                        marker="o",
-                        markersize=3,
-                        color=colors[i % len(colors)],
-                        alpha=0.7,
-                    )
-            else:
-                print(
-                    f"Plotting warning: Mismatch length for original errors of '{name}'"
-                )
 
-        ax1.set_ylabel("Original Distance Error (mm)")
-        ax1.set_title(f"Original Calibration Error Analysis - {self.sheet_name}")
+        # Add perfect calibration line (y=x)
+        ax1.plot(
+            [0, 4],
+            [0, 4],
+            "k--",
+            alpha=0.5,
+            linewidth=2,
+            label="Perfect Calibration (y=x)",
+        )
+
+        for i, (name, calib_data) in enumerate(self.calibrations.items()):
+            color = colors[i % len(colors)]
+            params = calib_data["params"]
+
+            # Calculate predicted distances for all sensor readings
+            predicted_distances = []
+            for sensor_reading in self.data["sensor_reading"]:
+                pred_dist = self.calculate_distance(sensor_reading, params)
+                predicted_distances.append(pred_dist)
+
+            ax1.plot(
+                self.data["distance"],  # True distance (x-axis)
+                predicted_distances,  # Predicted distance (y-axis)
+                color=color,
+                label=name,
+                linewidth=1.5,
+                alpha=0.8,
+            )
+
+        ax1.set_ylabel("Predicted Distance (mm)")
+        ax1.set_title(f"Predicted vs True Distance - {sensor_display_name}")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # Plot 2: Adjusted Errors (Error - Mean Error)
+        # Plot 2: Prediction Error (Predicted - True) vs True Distance
         ax2 = axs[1]
-        for i, (name, adj_errors_arr) in enumerate(self.adjusted_errors.items()):
-            if len(adj_errors_arr) == len(self.data["distance"]):
-                valid_mask = ~np.isnan(adj_errors_arr)
-                if np.sum(valid_mask) > 0:  # Check if there's any valid data to plot
-                    ax2.plot(
-                        self.data["distance"][valid_mask],
-                        adj_errors_arr[valid_mask],
-                        label=name,
-                        marker="x",
-                        markersize=3,
-                        color=colors[i % len(colors)],
-                        alpha=0.7,
-                    )
-            else:
-                print(
-                    f"Plotting warning: Mismatch length for adjusted errors of '{name}'"
-                )
+        for i, (name, errors_arr) in enumerate(self.errors.items()):
+            color = colors[i % len(colors)]
+            ax2.plot(
+                self.data["distance"],  # True distance (x-axis)
+                errors_arr,  # Predicted - True distance (y-axis)
+                color=color,
+                label=name,
+                linewidth=1.5,
+                alpha=0.8,
+            )
+
+        # Add zero error reference line
+        ax2.axhline(y=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
 
         ax2.set_xlabel("True Distance (mm)")
-        ax2.set_ylabel("Adjusted Distance Error (mm)\\n(Error - Mean Original Error)")
-        ax2.set_title(
-            f"Adjusted Calibration Error (Linearity Check) - {self.sheet_name}"
-        )
+        ax2.set_ylabel("Prediction Error (mm)\n(Predicted Distance - True Distance)")
+        ax2.set_title(f"Prediction Error vs True Distance - {sensor_display_name}")
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
@@ -543,283 +717,82 @@ class SensorCalibrationAnalyzer:
         plt.show()
 
     def save_results(self, output_dir=".", base_filename="calibration_results"):
-        """
-        Save results organized by metrics for better comparability.
-        Creates separate sheets for each metric, showing how different position shifts affect that parameter.
-        Each sheet contains data for all calibrations to enable easy comparison.
-        """
-        if self.data is None or self.data.empty:
-            print(
-                f"No data loaded for sheet '{self.sheet_name}'. Skipping result saving."
-            )
-            return
-
-        if not self.calibrations:
-            print(
-                f"No calibrations performed for sheet '{self.sheet_name}'. Skipping result saving."
-            )
-            return
-
-        # Sanitize sheet name for use in filename
-        safe_sheet_name = "".join(c if c.isalnum() else "_" for c in self.sheet_name)
-        output_file_xlsx = f"{output_dir}/{base_filename}_{safe_sheet_name}.xlsx"
-
-        print(f"Saving results for sheet '{self.sheet_name}' to {output_file_xlsx}...")
-
+        """Save results to Excel file"""
         try:
-            with pd.ExcelWriter(output_file_xlsx, engine="openpyxl") as writer:
-                # Prepare data structures for metric-based organization
-                range_mask_1_3mm = (self.data["distance"] >= 1.0) & (
-                    self.data["distance"] <= 3.0
-                )
+            output_path = os.path.join(output_dir, f"{base_filename}.xlsx")
 
-                # Extract calibration info for organizing
-                calib_data = []
-                for name, calib_info in self.calibrations.items():
-                    params = calib_info["parameters"]
-                    orig_errors = self.errors.get(name)
-                    adj_errors = self.adjusted_errors.get(name)
+            # Create summary data
+            summary_data = []
+            for name, calib in self.calibrations.items():
+                params = calib["params"]
+                errors_arr = self.errors[name]
+                adj_errors_arr = self.adjusted_errors[name]
 
-                    row_data = {
-                        "Calibration_Name": name,
-                        "Shift_mm": calib_info.get("shift_mm", np.nan),
-                        "Type": calib_info.get("type", "N/A"),
-                        "A": params.get("A", np.nan),
-                        "B": params.get("B", np.nan),
-                        "C": params.get("C", np.nan),
+                summary_data.append(
+                    {
+                        "Calibration": name,
+                        "A": params["A"],
+                        "B": params["B"],
+                        "C": params["C"],
+                        "RMS_Adjusted_Error": np.sqrt(np.nanmean(adj_errors_arr**2)),
+                        "Max_Original_Error": np.nanmax(np.abs(errors_arr)),
+                        "Mean_Original_Error": np.nanmean(errors_arr),
                     }
-
-                    # Calculate error metrics
-                    if (
-                        orig_errors is not None
-                        and adj_errors is not None
-                        and len(orig_errors) == len(self.data)
-                        and len(adj_errors) == len(self.data)
-                    ):
-
-                        # All data metrics
-                        valid_orig_all = orig_errors[~np.isnan(orig_errors)]
-                        valid_adj_all = adj_errors[~np.isnan(adj_errors)]
-
-                        row_data["RMS_Adj_Err_All"] = (
-                            np.sqrt(np.mean(valid_adj_all**2))
-                            if len(valid_adj_all) > 0
-                            else np.nan
-                        )
-                        row_data["Max_Orig_Err_All"] = (
-                            np.max(np.abs(valid_orig_all))
-                            if len(valid_orig_all) > 0
-                            else np.nan
-                        )
-                        row_data["Mean_Orig_Err_All"] = (
-                            np.mean(valid_orig_all)
-                            if len(valid_orig_all) > 0
-                            else np.nan
-                        )
-
-                        # 1-3mm range metrics
-                        orig_errors_in_range_mask = range_mask_1_3mm & ~np.isnan(
-                            orig_errors
-                        )
-                        adj_errors_in_range_mask = range_mask_1_3mm & ~np.isnan(
-                            adj_errors
-                        )
-
-                        orig_errors_1_3 = orig_errors[orig_errors_in_range_mask]
-                        adj_errors_1_3 = adj_errors[adj_errors_in_range_mask]
-
-                        row_data["RMS_Adj_Err_1_3mm"] = (
-                            np.sqrt(np.mean(adj_errors_1_3**2))
-                            if len(adj_errors_1_3) > 0
-                            else np.nan
-                        )
-                        row_data["Max_Orig_Err_1_3mm"] = (
-                            np.max(np.abs(orig_errors_1_3))
-                            if len(orig_errors_1_3) > 0
-                            else np.nan
-                        )
-                        row_data["Mean_Orig_Err_1_3mm"] = (
-                            np.mean(orig_errors_1_3)
-                            if len(orig_errors_1_3) > 0
-                            else np.nan
-                        )
-                    else:
-                        # Fill with NaN if data is invalid
-                        for col in [
-                            "RMS_Adj_Err_All",
-                            "Max_Orig_Err_All",
-                            "Mean_Orig_Err_All",
-                            "RMS_Adj_Err_1_3mm",
-                            "Max_Orig_Err_1_3mm",
-                            "Mean_Orig_Err_1_3mm",
-                        ]:
-                            row_data[col] = np.nan
-
-                    calib_data.append(row_data)
-
-                df_all_data = pd.DataFrame(calib_data)
-
-                # Sort by shift for better readability
-                df_all_data = df_all_data.sort_values("Shift_mm").reset_index(drop=True)
-
-                # Sheet 1: Calibration Parameters (A, B, C vs Position Shift)
-                params_sheet = df_all_data[["Shift_mm", "Type", "A", "B", "C"]].copy()
-                params_sheet.to_excel(
-                    writer, sheet_name="Parameters_vs_Shift", index=False
                 )
-                print("  Sheet 'Parameters_vs_Shift' saved.")
 
-                # Sheet 2: Non-Linearity Metrics (RMS Adjusted Errors)
-                nonlin_sheet = df_all_data[
-                    ["Shift_mm", "Type", "RMS_Adj_Err_All", "RMS_Adj_Err_1_3mm"]
-                ].copy()
-                nonlin_sheet.rename(
-                    columns={
-                        "RMS_Adj_Err_All": "RMS_Adjusted_Error_All_Data",
-                        "RMS_Adj_Err_1_3mm": "RMS_Adjusted_Error_1_3mm_Range",
-                    },
-                    inplace=True,
-                )
-                nonlin_sheet.to_excel(
-                    writer, sheet_name="NonLinearity_vs_Shift", index=False
-                )
-                print("  Sheet 'NonLinearity_vs_Shift' saved.")
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                # Write summary
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name="Summary", index=False)
 
-                # Sheet 3: Maximum Original Errors
-                max_err_sheet = df_all_data[
-                    ["Shift_mm", "Type", "Max_Orig_Err_All", "Max_Orig_Err_1_3mm"]
-                ].copy()
-                max_err_sheet.rename(
-                    columns={
-                        "Max_Orig_Err_All": "Max_Original_Error_All_Data",
-                        "Max_Orig_Err_1_3mm": "Max_Original_Error_1_3mm_Range",
-                    },
-                    inplace=True,
-                )
-                max_err_sheet.to_excel(
-                    writer, sheet_name="MaxError_vs_Shift", index=False
-                )
-                print("  Sheet 'MaxError_vs_Shift' saved.")
-
-                # Sheet 4: Mean Original Errors (Bias)
-                mean_err_sheet = df_all_data[
-                    ["Shift_mm", "Type", "Mean_Orig_Err_All", "Mean_Orig_Err_1_3mm"]
-                ].copy()
-                mean_err_sheet.rename(
-                    columns={
-                        "Mean_Orig_Err_All": "Mean_Original_Error_All_Data",
-                        "Mean_Orig_Err_1_3mm": "Mean_Original_Error_1_3mm_Range",
-                    },
-                    inplace=True,
-                )
-                mean_err_sheet.to_excel(
-                    writer, sheet_name="MeanError_vs_Shift", index=False
-                )
-                print("  Sheet 'MeanError_vs_Shift' saved.")
-                # Sheet 5: Summary Overview
-                summary_sheet = df_all_data[
-                    [
-                        "Calibration_Name",
-                        "Shift_mm",
-                        "Type",
-                        "RMS_Adj_Err_All",
-                        "Max_Orig_Err_All",
-                        "Mean_Orig_Err_All",
-                    ]
-                ].copy()
-                summary_sheet.rename(
-                    columns={
-                        "Calibration_Name": "Calibration_Name",
-                        "RMS_Adj_Err_All": "NonLinearity_RMS",
-                        "Max_Orig_Err_All": "Max_Error",
-                        "Mean_Orig_Err_All": "Bias",
-                    },
-                    inplace=True,
-                )
-                summary_sheet.to_excel(
-                    writer, sheet_name="Summary_Overview", index=False
-                )
-                print("  Sheet 'Summary_Overview' saved.")
-
-                # Sheet 6: Sensor Distance Readings vs True Distance for Each Calibration
-                sensor_readings_sheet_data = {
-                    "True_Distance_mm": self.data["distance"].values
-                }
-
-                for name, calib_info in self.calibrations.items():
-                    params = calib_info["parameters"]
-                    calculated_distances = []
-
-                    for _, row in self.data.iterrows():
-                        sensor_reading = row["sensor_reading"]
-                        calc_dist = self.calculate_distance(sensor_reading, params)
-                        if calc_dist != float("inf") and not np.isnan(calc_dist):
-                            calculated_distances.append(calc_dist)
-                        else:
-                            calculated_distances.append(np.nan)
-
-                    shift_info = (
-                        f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
-                        if calib_info.get("shift_mm") is not None
-                        else ""
+                # Write raw calibration data used for coefficient calculation
+                if hasattr(self, "raw_calibration_data") and self.raw_calibration_data:
+                    raw_data_df = pd.DataFrame(self.raw_calibration_data)
+                    raw_data_df.to_excel(
+                        writer, sheet_name="Raw_Calibration_Data", index=False
                     )
-                    col_name = f"Calc_Dist_{name}{shift_info}"
-                    sensor_readings_sheet_data[col_name] = calculated_distances
+                    print(
+                        f"DEBUG: Added raw calibration data sheet with {len(self.raw_calibration_data)} entries"
+                    )  # Write detailed errors
+                error_data = pd.DataFrame({"Distance": self.data["distance"]})
+                for name, errors_arr in self.errors.items():
+                    error_data[f"{name}_Error"] = errors_arr
+                    error_data[f"{name}_Adj_Error"] = self.adjusted_errors[name]
 
-                sensor_readings_df = pd.DataFrame(sensor_readings_sheet_data)
-                sensor_readings_df.to_excel(
-                    writer, sheet_name="Calculated_Distances_vs_True", index=False
-                )
-                print("  Sheet 'Calculated_Distances_vs_True' saved.")
+                error_data.to_excel(writer, sheet_name="Detailed_Errors", index=False)
 
-                # Sheet 7: Distance Errors vs True Distance for Each Calibration
-                distance_errors_sheet_data = {
-                    "True_Distance_mm": self.data["distance"].values
-                }
+                # Write original raw data from Excel file for reference
+                if hasattr(self, "data") and self.data is not None:
+                    original_data = self.data.copy()
+                    # Add some metadata
+                    if hasattr(self, "sensor_name"):
+                        original_data["Sensor_Name"] = self.sensor_name
+                    if hasattr(self, "excel_file"):
+                        original_data["Source_File"] = os.path.basename(self.excel_file)
+                    if hasattr(self, "sheet_name"):
+                        original_data["Source_Sheet"] = self.sheet_name
+                    if hasattr(self, "unit_column"):
+                        original_data["Source_Column"] = self.unit_column
 
-                for name, calib_info in self.calibrations.items():
-                    errors_arr = self.errors.get(name)
-                    if errors_arr is not None and len(errors_arr) == len(self.data):
-                        shift_info = (
-                            f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
-                            if calib_info.get("shift_mm") is not None
-                            else ""
-                        )
-                        col_name = f"Error_{name}{shift_info}"
-                        distance_errors_sheet_data[col_name] = errors_arr
-                    else:
-                        # Fill with NaN if no valid error data
-                        shift_info = (
-                            f"_shift_{calib_info.get('shift_mm', 0)*1000:+.0f}um"
-                            if calib_info.get("shift_mm") is not None
-                            else ""
-                        )
-                        col_name = f"Error_{name}{shift_info}"
-                        distance_errors_sheet_data[col_name] = [np.nan] * len(self.data)
+                    original_data.to_excel(
+                        writer, sheet_name="Original_Raw_Data", index=False
+                    )
+                    print(
+                        f"DEBUG: Added original raw data sheet with {len(original_data)} data points"
+                    )
 
-                distance_errors_df = pd.DataFrame(distance_errors_sheet_data)
-                distance_errors_df.to_excel(
-                    writer, sheet_name="Distance_Errors_vs_True", index=False
-                )
-                print("  Sheet 'Distance_Errors_vs_True' saved.")
+            print(f"Results saved to: {output_path}")
 
-            print(f"Successfully saved results to {output_file_xlsx}")
-            print(
-                "Data organized by metrics for easy comparison across position shifts."
-            )
-
-        except ImportError:
-            print(
-                "Error: The 'openpyxl' library is required to write Excel files. Please install it using 'pip install openpyxl'."
-            )
         except Exception as e:
-            print(f"Error saving results to Excel: {e}")
+            print(f"Error saving results: {e}")
 
     def plot_raw_and_interpolated_data(self):
         """Plot raw data and show interpolated points before analysis begins"""
         if self.data is None or self.data.empty:
             print("No data available for plotting.")
             return
+
+        sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
 
         # Create figure
         fig, ax = plt.subplots(1, 1, figsize=(14, 8))
@@ -862,48 +835,34 @@ class SensorCalibrationAnalyzer:
         colors = ["green", "orange", "purple"]
 
         for shift_mm, color in zip(shifts_to_show, colors):
-            target_distances = [bp + shift_mm for bp in ideal_base_points]
+            target_distances = [p + shift_mm for p in ideal_base_points]
+            interpolated_readings = np.interp(target_distances, xp, fp)
 
-            # Check if targets are within data range
-            if min(target_distances) >= xp.min() and max(target_distances) <= xp.max():
-                interp_readings = np.interp(target_distances, xp, fp)
-
-                ax.scatter(
-                    target_distances,
-                    interp_readings,
-                    c=color,
-                    s=80,
-                    marker="s",
-                    alpha=0.8,
-                    label=f"Calib Points (shift {shift_mm*1000:+.0f}μm)",
-                    zorder=4,
-                    edgecolors="black",
-                    linewidth=1,
-                )
-
-                # Add annotations for calibration points
-                for dist, reading in zip(target_distances, interp_readings):
-                    ax.annotate(
-                        f"{dist:.1f}mm",
-                        (dist, reading),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=8,
-                        alpha=0.8,
-                    )
+            ax.scatter(
+                target_distances,
+                interpolated_readings,
+                c=color,
+                s=100,
+                marker="s",
+                alpha=0.8,
+                label=f"Shift {shift_mm*1000:+.0f}μm",
+                zorder=4,
+                edgecolors="black",
+                linewidth=1,
+            )
 
         ax.set_xlabel("True Distance (mm)", fontsize=12)
         ax.set_ylabel("Sensor Reading", fontsize=12)
         ax.set_title(
-            f"Raw Data and Interpolation Overview - {self.sheet_name}", fontsize=14
+            f"Raw Data and Interpolation Overview - {sensor_display_name}", fontsize=14
         )
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=10)
 
         # Add data statistics text box
-        stats_text = f"Data Points: {len(self.data)}\\n"
-        stats_text += f'Distance Range: {self.data["distance"].min():.2f} - {self.data["distance"].max():.2f} mm\\n'
-        stats_text += f'Sensor Range: {self.data["sensor_reading"].min():.0f} - {self.data["sensor_reading"].max():.0f}\\n'
+        stats_text = f"Data Points: {len(self.data)}\n"
+        stats_text += f'Distance Range: {self.data["distance"].min():.2f} - {self.data["distance"].max():.2f} mm\n'
+        stats_text += f'Sensor Range: {self.data["sensor_reading"].min():.0f} - {self.data["sensor_reading"].max():.0f}\n'
         stats_text += f"Increment: {self.increment:.3f} mm"
 
         ax.text(
@@ -919,7 +878,7 @@ class SensorCalibrationAnalyzer:
         plt.tight_layout()
         plt.show()
 
-        print(f"Raw data visualization complete for '{self.sheet_name}'.")
+        print(f"Raw data visualization complete for '{sensor_display_name}'.")
         print(
             f"Green, orange, and purple squares show example calibration points for different position shifts."
         )
@@ -927,8 +886,10 @@ class SensorCalibrationAnalyzer:
     def plot_nonlinearity_vs_shift(self):
         """Plot non-linearity (RMS adjusted error) vs calibration misposition"""
         if not self.calibrations:
-            print("No calibrations available for non-linearity plot.")
+            print("No calibration data available for non-linearity plotting.")
             return
+
+        sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
 
         # Prepare data for plotting
         shifts_mm = []
@@ -941,36 +902,30 @@ class SensorCalibrationAnalyzer:
         )
 
         for name, calib_info in self.calibrations.items():
-            shift_mm = calib_info.get("shift_mm")
-
-            # Include all calibrations with shift information
-            if shift_mm is None:
-                continue
-
-            adj_errors = self.adjusted_errors.get(name)
-            if adj_errors is not None and len(adj_errors) == len(self.data):
-                # All data non-linearity
-                valid_adj_all = adj_errors[~np.isnan(adj_errors)]
-                if len(valid_adj_all) > 0:
-                    rms_adj_all = np.sqrt(np.mean(valid_adj_all**2))
-                else:
-                    rms_adj_all = np.nan
-
-                # 1-3mm range non-linearity
-                adj_errors_in_range_mask = range_mask_1_3mm & ~np.isnan(adj_errors)
-                adj_errors_1_3 = adj_errors[adj_errors_in_range_mask]
-                if len(adj_errors_1_3) > 0:
-                    rms_adj_1_3 = np.sqrt(np.mean(adj_errors_1_3**2))
-                else:
-                    rms_adj_1_3 = np.nan
-
-                shifts_mm.append(shift_mm * 1000)  # Convert to micrometers
-                nonlinearity_all.append(rms_adj_all)
-                nonlinearity_1_3mm.append(rms_adj_1_3)
+            # Extract shift from calibration name (assumes format "shift_XXXum")
+            try:
+                shift_str = name.split("_")[1].replace("um", "")
+                shift_um = float(shift_str)
+                shift_mm = shift_um / 1000.0
+                shifts_mm.append(shift_um)  # Keep in micrometers for x-axis
                 calib_names.append(name)
 
+                # Calculate non-linearity (RMS of adjusted errors)
+                adj_errors = self.adjusted_errors[name]
+                nonlinearity_all.append(np.sqrt(np.mean(adj_errors**2)))
+
+                # Calculate non-linearity for 1-3mm range
+                adj_errors_1_3mm = adj_errors[range_mask_1_3mm]
+                if len(adj_errors_1_3mm) > 0:
+                    nonlinearity_1_3mm.append(np.sqrt(np.mean(adj_errors_1_3mm**2)))
+                else:
+                    nonlinearity_1_3mm.append(0)
+
+            except (IndexError, ValueError):
+                continue
+
         if not shifts_mm:
-            print("No valid shift data available for non-linearity plot.")
+            print("Could not extract shift information from calibration names.")
             return
 
         # Sort data by shift for proper line plotting
@@ -1008,120 +963,310 @@ class SensorCalibrationAnalyzer:
         ax.set_xlabel("Calibration Misposition (μm)", fontsize=12)
         ax.set_ylabel("Non-Linearity (RMS Adjusted Error, mm)", fontsize=12)
         ax.set_title(
-            f"Non-Linearity vs Calibration Misposition - {self.sheet_name}", fontsize=14
+            f"Non-Linearity vs Calibration Misposition - {sensor_display_name}",
+            fontsize=14,
         )
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=11)
 
-        # Add data point labels for better readability
-        for i, (shift, nl_all, nl_1_3) in enumerate(
-            zip(shifts_mm, nonlinearity_all, nonlinearity_1_3mm)
-        ):
-            if not np.isnan(nl_all):
-                ax.annotate(
-                    f"{nl_all:.3f}",
-                    (shift, nl_all),
-                    textcoords="offset points",
-                    xytext=(0, 10),
-                    ha="center",
-                    fontsize=9,
-                )
-            if not np.isnan(nl_1_3):
-                ax.annotate(
-                    f"{nl_1_3:.3f}",
-                    (shift, nl_1_3),
-                    textcoords="offset points",
-                    xytext=(0, -15),
-                    ha="center",
-                    fontsize=9,
-                )
+        # Add some formatting
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.3)
+        ax.axvline(x=0, color="k", linestyle="--", alpha=0.3)
 
-        # Improve layout
         plt.tight_layout()
         plt.show()
 
-        # Print summary statistics
-        print(f"\n=== Non-Linearity vs Shift Summary - {self.sheet_name} ===")
-        print(f"{'Shift (μm)':<12} {'All Data':<12} {'1-3mm Range':<12}")
-        print("-" * 40)
-        for shift, nl_all, nl_1_3 in zip(
-            shifts_mm, nonlinearity_all, nonlinearity_1_3mm
-        ):
-            print(f"{shift:+8.0f}     {nl_all:8.4f}     {nl_1_3:8.4f}")
+    def analyze_position_error_influence(self):
+        """Analyze how calibration position errors affect distance measurement accuracy"""
+        try:
+            # Get the list of sensors (units)
+            units = self.get_units()
+            if not units:
+                print("No units found!")
+                return
+
+            # ONLY ANALYZE FIRST SENSOR (Column B)
+            unit = units[0]  # First sensor only
+            print(f"=== DEBUGGING FIRST SENSOR ONLY: {unit['name']} ===")
+
+            # Load data for this sensor
+            data = self.load_sensor_data(unit["column"])
+            if data is None or data.empty:
+                print(f"No data for sensor {unit['name']}")
+                return
+
+            print(f"Loaded {len(data)} data points")
+
+            # Test only the reference calibration (shift = 0)
+            shift_um = 0
+            print(f"\nTesting reference calibration (shift = {shift_um}μm):")
+
+            # Get calibration points
+            cal_points = self.get_shifted_calibration_points(data, shift_um)
+            if cal_points is None:
+                print("Could not get calibration points")
+                return
+
+            # Calculate calibration parameters (this will show debug output)
+            params = self.calculate_calibration_parameters(cal_points)
+
+            if params["B"] == 0:
+                print("Invalid calibration parameters")
+                return
+
+            # Test distance calculation on a few points
+            print(f"\nTesting distance calculation:")
+            test_points = data.head(5)
+            for _, row in test_points.iterrows():
+                true_dist = row["distance"]
+                sensor_val = row["sensor_reading"]
+                calc_dist = self.calculate_distance(sensor_val, params)
+                error = calc_dist - true_dist
+                print(
+                    f"True: {true_dist:.3f}mm, Sensor: {sensor_val:.0f}, Calculated: {calc_dist:.3f}mm, Error: {error:.3f}mm"
+                )
+
+            print(f"\n=== DONE - DEBUGGING FIRST SENSOR ONLY ===")
+            return  # STOP HERE - no plots, no other sensors
+
+        except Exception as e:
+            print(f"Error in analysis: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+
+def get_raw_units_info(excel_file_path, sheet_name):
+    """
+    Extract unit information from raw data sheets.
+    Returns list of dictionaries with unit info.
+    """
+    print(
+        f"DEBUG: get_raw_units_info CALLED for file='{excel_file_path}', sheet='{sheet_name}'"
+    )  # DEBUG
+    try:
+        df_raw = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+
+        units_info = []
+        if len(df_raw) > 1:  # Need at least 2 rows for header
+            for col_idx in range(1, min(5, df_raw.shape[1])):  # Columns B-E
+                col_letter = chr(ord("A") + col_idx)
+                sensor_name = str(df_raw.iloc[1, col_idx])  # Row 2
+                units_info.append(
+                    {"name": sensor_name, "sheet": sheet_name, "column": col_letter}
+                )
+
+        return units_info
+
+    except FileNotFoundError:
+        print(f"ERROR: File not found: {excel_file_path}")
+        return []
+    except ValueError as ve:
+        print(f"ERROR: Sheet '{sheet_name}' not found in {excel_file_path}")
+        return []
+    except Exception as e:
+        print(f"ERROR in get_raw_units_info: {e}")
+        return []
 
 
 if __name__ == "__main__":
     # --- CONFIGURATION ---
-    excel_file_path = "C:\\\\\\\\Users\\\\\\\\geller\\\\\\\\OneDrive - HP Inc\\\\\\\\data\\\\\\\\ROS\\\\\\\\ROS calibration for series 4\\\\\\\\manual calibration of ROS agasint series 4 drum\\\\\\\\9230004 manual measurements\\\\\\\\channels 1 and 2 summary.xlsx"
-    sheets_to_analyze = ["channel 1 all", "channel 2 all"]  # Updated list of sheets
-    output_directory = "analysis_results"  # Directory to save the Excel results
-    base_output_filename_prefix = "calibration_analysis"  # Prefix for output files
+    excel_file_path = r"C:\Users\geller\OneDrive - HP Inc\data\ROS\using ROS for cast iron\ROS vs PIP tsrget in Tamar104 press\summary.xlsx"
+
+    # First, read the header row to get actual sensor names from 'all raw' sheet
+    try:
+        df_header = pd.read_excel(excel_file_path, sheet_name="all raw")
+        print("Raw header data:")
+        print(df_header.head(3))  # Show first 3 rows to debug
+
+        print("Header information from row 2 of 'all raw' sheet:")
+        if len(df_header) > 1:
+            sensor_names = {}
+            # Read sensor names from columns B, C, D, E (indices 1, 2, 3, 4)
+            for col_letter, col_index in [("B", 1), ("C", 2), ("D", 3), ("E", 4)]:
+                if col_index < df_header.shape[1]:
+                    sensor_name = df_header.iloc[1, col_index]  # Row 2 (index 1)
+
+                    # Check if we got a valid sensor name (not a number)
+                    if (
+                        pd.isna(sensor_name)
+                        or str(sensor_name).replace(".", "").replace(",", "").isdigit()
+                    ):
+                        # Try row 1 if row 2 has numbers
+                        if len(df_header) > 0:
+                            sensor_name = df_header.iloc[0, col_index]
+
+                        # If still not good, use default
+                        if (
+                            pd.isna(sensor_name)
+                            or str(sensor_name)
+                            .replace(".", "")
+                            .replace(",", "")
+                            .isdigit()
+                        ):
+                            sensor_name = f"Sensor_{col_letter}"
+
+                    sensor_names[col_letter] = str(sensor_name).strip()
+                    print(f"  Column {col_letter}: {sensor_names[col_letter]}")
+                else:
+                    sensor_names[col_letter] = f"Sensor_{col_letter}"
+                    print(
+                        f"  Column {col_letter}: {sensor_names[col_letter]} (default)"
+                    )
+        else:
+            print("Could not read header row, using default names")
+            sensor_names = {
+                "B": "Sensor_B",
+                "C": "Sensor_C",
+                "D": "Sensor_D",
+                "E": "Sensor_E",
+            }
+    except Exception as e:
+        print(f"Error reading header: {e}")
+        sensor_names = {
+            "B": "Sensor_B",
+            "C": "Sensor_C",
+            "D": "Sensor_D",
+            "E": "Sensor_E",
+        }  # Define only column B for debugging purposes
+    ros_channels = [
+        {
+            "name": sensor_names["B"],  # Uses actual sensor name from Excel
+            "sheet": "all raw",
+            "column": "B",
+        },
+        # Commented out other channels for debugging
+        # {
+        #     "name": sensor_names["C"],  # Uses actual sensor name from Excel
+        #     "sheet": "all raw",
+        #     "column": "C",
+        # },
+        # {
+        #     "name": sensor_names["D"],  # Uses actual sensor name from Excel
+        #     "sheet": "all raw",
+        #     "column": "D",
+        # },        # {
+        #     "name": sensor_names["E"],  # Uses actual sensor name from Excel
+        #     "sheet": "all raw",
+        #     "column": "E",
+        # },
+    ]
+
+    output_directory = r"C:\Users\geller\OneDrive - HP Inc\data\ROS\using ROS for cast iron\ROS vs PIP tsrget in Tamar104 press"
+    base_output_filename_prefix = "tamar104_analysis"
 
     # --- CREATE OUTPUT DIRECTORY IF IT DOESN'T EXIST ---
-    import os
-
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
         print(f"Created output directory: {output_directory}")
 
-    # --- EXECUTION FOR EACH SHEET ---
-    for sheet_name in sheets_to_analyze:
+    # Verify the data structure first
+    print(f"\n=== VERIFYING DATA STRUCTURE ===")
+    print(f"File: {excel_file_path}")
+    print(f"Sheet: all raw")
+    print(f"Expected structure:")
+    print(f"  Column A: Distance values")
+    print(f"  Columns B-E: Raw sensor data for 4 sensors")
+    print(f"  Row 1: Headers")
+    print(f"  Row 2: Sensor names")
+    print(f"  Row 3+: Actual data")
+
+    # Test data loading with a sample analyzer
+    test_analyzer = SensorCalibrationAnalyzer(
+        excel_file_path, "all raw", unit_column="B"
+    )
+
+    if test_analyzer.data is not None and not test_analyzer.data.empty:
+        print(f"✓ Data loaded successfully!")
+        print(f"  Total data points: {len(test_analyzer.data)}")
         print(
-            f"\\n\\n--- Starting analysis for: {excel_file_path} - Sheet: {sheet_name} ---"
+            f"  Distance range: {test_analyzer.data['distance'].min():.3f} - {test_analyzer.data['distance'].max():.3f} mm"
+        )
+        print(
+            f"  Sensor reading range: {test_analyzer.data['sensor_reading'].min():.0f} - {test_analyzer.data['sensor_reading'].max():.0f}"
         )
 
-        # Create an analyzer instance
-        analyzer = SensorCalibrationAnalyzer(excel_file_path, sheet_name)
+        # Check data filtering
+        filtered_data = test_analyzer.data[test_analyzer.data["distance"] <= 4]
+        print(f"  Data points with distance ≤ 4mm: {len(filtered_data)}")
 
-        if analyzer.data is not None and not analyzer.data.empty:
-            # Plot raw data and interpolation overview first
+        if len(filtered_data) > 0:
             print(
-                f"Displaying raw data overview for sheet '{sheet_name}'. Close the plot window to continue..."
-            )
-            analyzer.plot_raw_and_interpolated_data()
-
-            # Perform calibrations
-            analyzer.perform_calibrations()
-
-            # Calculate errors
-            analyzer.calculate_errors()
-
-            # Print results to console
-            analyzer.print_results()
-
-            # Plot errors
-            # Note: plt.show() is blocking. Plots for each sheet will appear sequentially.
-            print(
-                f"Displaying plots for sheet '{sheet_name}'. Close the plot window to continue..."
-            )
-            analyzer.plot_errors()
-
-            # Plot non-linearity vs shift
-            print(
-                f"Displaying non-linearity vs shift plot for sheet '{sheet_name}'. Close the plot window to continue..."
-            )
-            analyzer.plot_nonlinearity_vs_shift()
-
-            # Save results to Excel
-            # Sanitize sheet name for use in filename
-            safe_sheet_name_for_file = "".join(
-                c if c.isalnum() else "_" for c in sheet_name
-            )
-            sheet_specific_base_filename = (
-                f"{base_output_filename_prefix}_{safe_sheet_name_for_file}"
-            )
-            analyzer.save_results(
-                output_dir=output_directory, base_filename=sheet_specific_base_filename
-            )
-
-            print(f"\\nAnalysis complete for sheet '{sheet_name}'.")
-            print(f"Plots were displayed.")
-            print(
-                f"Results saved to an Excel file in '{output_directory}' starting with '{sheet_specific_base_filename}'."
+                f"  Filtered distance range: {filtered_data['distance'].min():.3f} - {filtered_data['distance'].max():.3f} mm"
             )
         else:
-            print(
-                f"Could not proceed with analysis for sheet '{sheet_name}' due to data loading issues."
-            )
+            print("  ⚠️  No data points found with distance ≤ 4mm")
+    else:
+        print("❌ Failed to load data. Check file path and sheet name.")
+        print("Available sheets in the file:")
+        try:
+            xl_file = pd.ExcelFile(excel_file_path)
+            for sheet in xl_file.sheet_names:
+                print(f"  - {sheet}")
+        except Exception as e:
+            print(f"  Error reading file: {e}")
+        exit(1)  # --- EXECUTION FOR EACH ROS CHANNEL ---
+    print(f"\n=== PROCESSING COLUMN B ONLY (DEBUG MODE) ===")
+    for i, ros_channel in enumerate(ros_channels, 1):
+        channel_name = ros_channel["name"]
+        sheet_name = ros_channel["sheet"]
+        column = ros_channel["column"]
 
-    print("\\\\n\\nAll specified sheets processed.")
+        print(f"\n--- Sensor {i}/1: {channel_name} (Column {column}) ---")
+
+        # Create an analyzer instance for this specific sensor column
+        analyzer = SensorCalibrationAnalyzer(
+            excel_file_path, sheet_name, unit_column=column
+        )
+
+        if analyzer.data is not None and not analyzer.data.empty:
+            # Data is already filtered to distance <= 4mm in load_data_with_unit_column
+            print(f"Data points loaded: {len(analyzer.data)}")
+
+            if len(analyzer.data) == 0:
+                print(f"No data available for {channel_name}. Skipping.")
+                continue
+
+            # Perform the complete analysis workflow
+            print(f"Starting calibration analysis for '{channel_name}'...")
+
+            # 1. Show raw data visualization
+            analyzer.plot_raw_and_interpolated_data()
+
+            # 2. Perform calibrations with different position shifts
+            analyzer.perform_calibrations()
+
+            # 3. Calculate calibration errors
+            analyzer.calculate_errors()
+
+            # 4. Print results summary
+            analyzer.print_results()
+
+            # 5. Plot error analysis
+            analyzer.plot_errors()  # 6. Plot non-linearity vs position shift
+            analyzer.plot_nonlinearity_vs_shift()
+
+            # 7. Save results to Excel
+            safe_channel_name = "".join(c if c.isalnum() else "_" for c in channel_name)
+            channel_specific_base_filename = (
+                f"{base_output_filename_prefix}_{safe_channel_name}"
+            )
+            analyzer.save_results(
+                output_dir=output_directory,
+                base_filename=channel_specific_base_filename,
+            )
+            print(f"✓ Analysis complete for '{channel_name}'.")
+            print(
+                f"  Results saved: '{output_directory}/{channel_specific_base_filename}.xlsx'"
+            )
+    else:
+        print(f"❌ Could not load data for '{channel_name}'. Skipping.")
+
+    print(f"\n{'='*60}")
+    print("COLUMN B ANALYSIS COMPLETE (DEBUG MODE)")
+    print(f"{'='*60}")
+    print(f"Results saved in directory: {output_directory}")
+    print("Column B analysis includes:")
+    print("  - Calibration parameters (A, B, C coefficients)")
+    print("  - Error statistics and non-linearity analysis")
+    print("  - Detailed error data for each position shift")
