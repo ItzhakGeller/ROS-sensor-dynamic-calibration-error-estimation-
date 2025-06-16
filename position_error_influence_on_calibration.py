@@ -942,22 +942,20 @@ class SensorCalibrationAnalyzer:
         ax.plot(
             shifts_mm,
             nonlinearity_all,
-            "o-",
-            label="All Data Range",
-            marker="o",
+            "o-",  # fmt string specifies marker
             markersize=8,
             linewidth=2,
             alpha=0.8,
+            label="All Data Range",
         )
         ax.plot(
             shifts_mm,
             nonlinearity_1_3mm,
-            "s-",
-            label="1-3mm Range",
-            marker="s",
+            "s-",  # fmt string specifies marker
             markersize=8,
             linewidth=2,
             alpha=0.8,
+            label="1-3mm Range",
         )
 
         ax.set_xlabel("Calibration Misposition (μm)", fontsize=12)
@@ -976,64 +974,250 @@ class SensorCalibrationAnalyzer:
         plt.tight_layout()
         plt.show()
 
-    def analyze_position_error_influence(self):
-        """Analyze how calibration position errors affect distance measurement accuracy"""
+    def plot_nonlinearity_after_offset_reduction(self):
+        """Plot the non-linearity after offset reduction."""
+        if self.data is None or len(self.data) == 0:
+            print("DEBUG: No data available for plotting.")
+            return
+
+        # Extract distance and sensor readings
+        print("DEBUG: Extracting distance and sensor readings.")
+        distances = self.data["distance"]
+        sensor_readings = self.data["sensor_reading"]
+
+        print(f"DEBUG: Distances: {distances.head().tolist()}")
+        print(f"DEBUG: Sensor Readings: {sensor_readings.head().tolist()}")
+
+        # Apply offset reduction (example: subtract mean)
+        print("DEBUG: Applying offset reduction.")
+        offset_reduced_readings = sensor_readings - sensor_readings.mean()
+
+        print(
+            f"DEBUG: Offset Reduced Readings: {offset_reduced_readings.head().tolist()}"
+        )
+
+        # Plot the data
+        print("DEBUG: Plotting data.")
+        plt.figure(figsize=(10, 6))
+        plt.plot(
+            distances,
+            sensor_readings,
+            label="Original Readings",
+            marker="o",
+            linestyle="--",
+        )
+        plt.plot(
+            distances,
+            offset_reduced_readings,
+            label="Offset Reduced",
+            marker="x",
+            linestyle="-",
+        )
+
+        # Add labels, title, and legend        plt.xlabel("Distance (mm)")
+        plt.ylabel("Sensor Reading")
+        plt.title("Non-Linearity After Offset Reduction")
+        plt.legend()
+        plt.grid(True)
+
+        # Show the plot
+        print("DEBUG: Displaying plot.")
+        plt.show()
+
+    def plot_nonlinearity_comparison_with_offset_reduction(self):
+        """
+        Plot the non-linearity (error) versus distance for each misposition,
+        with offsets reduced to enable better comparison of the patterns.
+        """
+        if not self.calibrations or not self.errors:
+            print("No calibration data available for plotting.")
+            return
+
+        sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
+
+        # Create a figure with appropriate size
+        fig, ax = plt.subplots(figsize=(14, 8))
+
+        # Define a set of distinct colors for better differentiation
+        distinct_colors = [
+            "#e6194B",  # Red
+            "#3cb44b",  # Green
+            "#4363d8",  # Blue
+            "#f58231",  # Orange
+            "#911eb4",  # Purple
+            "#42d4f4",  # Cyan
+            "#f032e6",  # Magenta
+            "#ffe119",  # Yellow
+            "#bfef45",  # Lime
+            "#fabed4",  # Pink
+            "#000075",  # Navy
+        ]
+
+        # Define distinct markers
+        markers = ["o", "s", "^", "D", "v", "*", "p", "h", "X", "+"]
+
+        # Get the sorted list of calibration names
+        calib_names = sorted(
+            self.calibrations.keys(),
+            key=lambda x: (
+                float(x.split("_")[1].replace("um", "")) if "shift_" in x else 0
+            ),
+        )
+
+        # Plot each calibration's errors vs distance
+        for idx, calib_name in enumerate(calib_names):
+            if calib_name not in self.errors:
+                continue
+
+            # Get the errors and distances
+            if "adjusted_errors" in self.errors[calib_name]:
+                # Use already calculated adjusted errors
+                offset_reduced_errors = self.errors[calib_name]["adjusted_errors"]
+                distances = self.errors[calib_name]["true_distances"]
+                mean_error = self.errors[calib_name].get("mean_original_error", 0)
+            else:
+                # Calculate on the fly if not already done
+                errors = self.errors[calib_name]
+                distances = self.data["distance"].values
+                mean_error = np.mean(errors)
+                offset_reduced_errors = errors - mean_error
+
+            # Extract the shift value from the calibration name
+            shift_value = int(calib_name.split("_")[1].replace("um", ""))
+
+            # Plot with distinct colors and markers
+            ax.plot(
+                distances,
+                offset_reduced_errors,
+                linewidth=2,
+                marker=markers[idx % len(markers)],
+                markersize=6,
+                alpha=0.8,
+                color=distinct_colors[idx % len(distinct_colors)],
+                label=f"{shift_value:+d}μm (Offset: {mean_error:.3f}mm)",
+            )  # Add labels and title
+        ax.set_xlabel("Distance (mm)", fontsize=12)
+        ax.set_ylabel("Offset-Reduced Error (mm)", fontsize=12)
+        ax.set_title(
+            f"Non-Linearity Comparison After Offset Reduction - {sensor_display_name}",
+            fontsize=14,
+        )
+
+        # Add grid and legend
+        ax.grid(True, linestyle="--", alpha=0.7)
+        ax.legend(
+            title="Misposition", loc="upper right", fontsize=10, title_fontsize=11
+        )
+
+        # Add reference line at y=0
+        ax.axhline(
+            y=0, color="k", linestyle="--", alpha=0.5
+        )  # Set y-axis limits for better visualization
         try:
-            # Get the list of sensors (units)
-            units = self.get_units()
-            if not units:
-                print("No units found!")
-                return
+            max_error = max(
+                [
+                    max(abs(self.errors[c] - np.mean(self.errors[c])))
+                    for c in calib_names
+                    if c in self.errors
+                ]
+            )
+            ax.set_ylim(-max_error * 1.1, max_error * 1.1)
+        except (ValueError, TypeError):
+            # In case of errors calculating max_error, use automatic scaling
+            pass
 
-            # ONLY ANALYZE FIRST SENSOR (Column B)
-            unit = units[0]  # First sensor only
-            print(f"=== DEBUGGING FIRST SENSOR ONLY: {unit['name']} ===")
+        plt.tight_layout()
+        plt.show()
 
-            # Load data for this sensor
-            data = self.load_sensor_data(unit["column"])
-            if data is None or data.empty:
-                print(f"No data for sensor {unit['name']}")
-                return
+    def plot_calibrated_nonlinearity_without_bias(self):
+        """
+        Plot the non-linearity (error) vs. true distance for each calibration after removing the offset (bias).
+        This allows better comparison of the actual non-linearity patterns between different calibrations.
+        """
+        if not self.calibrations or not self.errors:
+            print(
+                "No calibration data available. Run perform_calibrations() and calculate_errors() first."
+            )
+            return
 
-            print(f"Loaded {len(data)} data points")
+        fig, ax = plt.subplots(figsize=(12, 8))
 
-            # Test only the reference calibration (shift = 0)
-            shift_um = 0
-            print(f"\nTesting reference calibration (shift = {shift_um}μm):")
+        # Define a set of distinct colors for better differentiation
+        distinct_colors = [
+            "#e6194B",  # Red
+            "#3cb44b",  # Green
+            "#4363d8",  # Blue
+            "#f58231",  # Orange
+            "#911eb4",  # Purple
+            "#42d4f4",  # Cyan
+            "#f032e6",  # Magenta
+            "#ffe119",  # Yellow
+            "#bfef45",  # Lime
+            "#fabed4",  # Pink
+            "#000075",  # Navy
+        ]
 
-            # Get calibration points
-            cal_points = self.get_shifted_calibration_points(data, shift_um)
-            if cal_points is None:
-                print("Could not get calibration points")
-                return
+        # Define distinct markers
+        markers = ["o", "s", "^", "D", "v", "*", "p", "h", "X", "+"]
 
-            # Calculate calibration parameters (this will show debug output)
-            params = self.calculate_calibration_parameters(cal_points)
+        # List to store calibration names for ordered plotting
+        calib_list = sorted(
+            self.calibrations.keys(),
+            key=lambda x: int(x.split("_")[1].replace("um", "")),
+        )
 
-            if params["B"] == 0:
-                print("Invalid calibration parameters")
-                return
+        # For each calibration in order
+        for i, calib_name in enumerate(calib_list):
+            if (
+                calib_name in self.errors
+                and "adjusted_errors" in self.errors[calib_name]
+            ):
+                # Get the true distances and errors
+                true_distances = self.errors[calib_name]["true_distances"]
+                adj_errors = self.errors[calib_name]["adjusted_errors"]
 
-            # Test distance calculation on a few points
-            print(f"\nTesting distance calculation:")
-            test_points = data.head(5)
-            for _, row in test_points.iterrows():
-                true_dist = row["distance"]
-                sensor_val = row["sensor_reading"]
-                calc_dist = self.calculate_distance(sensor_val, params)
-                error = calc_dist - true_dist
-                print(
-                    f"True: {true_dist:.3f}mm, Sensor: {sensor_val:.0f}, Calculated: {calc_dist:.3f}mm, Error: {error:.3f}mm"
+                # Extract the shift value from the calibration name
+                shift_value = int(calib_name.split("_")[1].replace("um", ""))
+
+                # Get the mean original error (offset)
+                offset = self.errors[calib_name].get("mean_original_error", 0)
+
+                # Plot the adjusted errors (non-linearity without bias)
+                ax.plot(
+                    true_distances,
+                    adj_errors,
+                    label=f"{shift_value:+d}μm (Offset: {offset:.3f}mm)",
+                    color=distinct_colors[i % len(distinct_colors)],
+                    linewidth=2,
+                    marker=markers[i % len(markers)],
+                    markersize=6,
+                    alpha=0.8,
                 )
 
-            print(f"\n=== DONE - DEBUGGING FIRST SENSOR ONLY ===")
-            return  # STOP HERE - no plots, no other sensors
+        # Add grid, labels, title, and legend
+        ax.grid(True, linestyle="--", alpha=0.7)
+        ax.set_xlabel("Distance (mm)", fontsize=12)
+        ax.set_ylabel("Non-Linearity after Bias Removal (mm)", fontsize=12)
 
-        except Exception as e:
-            print(f"Error in analysis: {e}")
-            import traceback
+        # Add the sensor name to the title if available
+        if hasattr(self, "sensor_name"):
+            ax.set_title(
+                f"Non-Linearity Comparison After Offset Reduction - {self.sensor_name}",
+                fontsize=14,
+            )
+        else:
+            ax.set_title("Non-Linearity Comparison After Offset Reduction", fontsize=14)
 
-            traceback.print_exc()
+        # Add legend with smaller font size
+        ax.legend(
+            fontsize=10, loc="upper right", title="Misposition", title_fontsize=11
+        )
+
+        # Add zero line for reference
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+
+        plt.tight_layout()
+        plt.show()
 
 
 def get_raw_units_info(excel_file_path, sheet_name):
@@ -1240,13 +1424,15 @@ if __name__ == "__main__":
             analyzer.calculate_errors()
 
             # 4. Print results summary
-            analyzer.print_results()
+            analyzer.print_results()  # 5. Plot error analysis
+            analyzer.plot_errors()
 
-            # 5. Plot error analysis
-            analyzer.plot_errors()  # 6. Plot non-linearity vs position shift
-            analyzer.plot_nonlinearity_vs_shift()
+            # 6. Plot non-linearity vs position shift
+            analyzer.plot_nonlinearity_vs_shift()  # Note: Removed empty non-linearity with bias plot
 
-            # 7. Save results to Excel
+            # 8. Plot non-linearity comparison with offset reduction
+            print("\nGenerating non-linearity comparison with offset reduction plot...")
+            analyzer.plot_nonlinearity_comparison_with_offset_reduction()  # 9. Save results to Excel
             safe_channel_name = "".join(c if c.isalnum() else "_" for c in channel_name)
             channel_specific_base_filename = (
                 f"{base_output_filename_prefix}_{safe_channel_name}"
@@ -1259,8 +1445,8 @@ if __name__ == "__main__":
             print(
                 f"  Results saved: '{output_directory}/{channel_specific_base_filename}.xlsx'"
             )
-    else:
-        print(f"❌ Could not load data for '{channel_name}'. Skipping.")
+        else:
+            print(f"❌ Could not load data for '{channel_name}'. Skipping.")
 
     print(f"\n{'='*60}")
     print("COLUMN B ANALYSIS COMPLETE (DEBUG MODE)")
