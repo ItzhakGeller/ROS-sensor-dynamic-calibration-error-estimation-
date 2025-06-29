@@ -794,94 +794,24 @@ class SensorCalibrationAnalyzer:
 
         sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
 
-        # Create figure
-        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
-
-        # Plot raw data
-        ax.scatter(
-            self.data["distance"],
-            self.data["sensor_reading"],
-            c="blue",
-            s=30,
-            alpha=0.6,
-            label="Raw Data Points",
-            zorder=3,
-        )
-
-        # Create interpolation curve for visualization
-        distance_range = np.linspace(
-            self.data["distance"].min(), self.data["distance"].max(), 500
-        )
-
-        # Ensure data is sorted for interpolation
-        sorted_data = self.data.sort_values("distance")
-        xp = sorted_data["distance"].values
-        fp = sorted_data["sensor_reading"].values
-
-        interpolated_curve = np.interp(distance_range, xp, fp)
-        ax.plot(
-            distance_range,
-            interpolated_curve,
-            "r-",
-            linewidth=2,
-            alpha=0.7,
-            label="Interpolation Curve",
-            zorder=2,
-        )
-
-        # Show calibration target points for different shifts
-        ideal_base_points = [1.0, 2.0, 3.0]
-        shifts_to_show = [-0.3, 0.0, 0.3]  # Show a few example shifts
-        colors = ["green", "orange", "purple"]
-
-        for shift_mm, color in zip(shifts_to_show, colors):
-            target_distances = [p + shift_mm for p in ideal_base_points]
-            interpolated_readings = np.interp(target_distances, xp, fp)
-
-            ax.scatter(
-                target_distances,
-                interpolated_readings,
-                c=color,
-                s=100,
-                marker="s",
-                alpha=0.8,
-                label=f"Shift {shift_mm*1000:+.0f}μm",
-                zorder=4,
-                edgecolors="black",
-                linewidth=1,
-            )
-
-        ax.set_xlabel("True Distance (mm)", fontsize=12)
-        ax.set_ylabel("Sensor Reading", fontsize=12)
-        ax.set_title(
-            f"Raw Data and Interpolation Overview - {sensor_display_name}", fontsize=14
-        )
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=10)
-
-        # Add data statistics text box
-        stats_text = f"Data Points: {len(self.data)}\n"
-        stats_text += f'Distance Range: {self.data["distance"].min():.2f} - {self.data["distance"].max():.2f} mm\n'
-        stats_text += f'Sensor Range: {self.data["sensor_reading"].min():.0f} - {self.data["sensor_reading"].max():.0f}\n'
-        stats_text += f"Increment: {self.increment:.3f} mm"
-
-        ax.text(
-            0.02,
-            0.98,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-        )
-
-        plt.tight_layout()
-        plt.show()
-
-        print(f"Raw data visualization complete for '{sensor_display_name}'.")
-        print(
-            f"Green, orange, and purple squares show example calibration points for different position shifts."
-        )
+        # Store data for combined plotting - return data instead of plotting immediately
+        return {
+            "sensor_name": sensor_display_name,
+            "distance": self.data["distance"],
+            "sensor_reading": self.data["sensor_reading"],
+            "data_stats": {
+                "points": len(self.data),
+                "distance_range": (
+                    self.data["distance"].min(),
+                    self.data["distance"].max(),
+                ),
+                "sensor_range": (
+                    self.data["sensor_reading"].min(),
+                    self.data["sensor_reading"].max(),
+                ),
+                "increment": self.increment,
+            },
+        }
 
     def plot_nonlinearity_vs_shift(self):
         """Plot non-linearity (RMS adjusted error) vs calibration misposition"""
@@ -974,89 +904,33 @@ class SensorCalibrationAnalyzer:
         plt.tight_layout()
         plt.show()
 
-    def plot_nonlinearity_after_offset_reduction(self):
-        """Plot the non-linearity after offset reduction."""
-        if self.data is None or len(self.data) == 0:
-            print("DEBUG: No data available for plotting.")
-            return
-
-        # Extract distance and sensor readings
-        print("DEBUG: Extracting distance and sensor readings.")
-        distances = self.data["distance"]
-        sensor_readings = self.data["sensor_reading"]
-
-        print(f"DEBUG: Distances: {distances.head().tolist()}")
-        print(f"DEBUG: Sensor Readings: {sensor_readings.head().tolist()}")
-
-        # Apply offset reduction (example: subtract mean)
-        print("DEBUG: Applying offset reduction.")
-        offset_reduced_readings = sensor_readings - sensor_readings.mean()
-
-        print(
-            f"DEBUG: Offset Reduced Readings: {offset_reduced_readings.head().tolist()}"
-        )
-
-        # Plot the data
-        print("DEBUG: Plotting data.")
-        plt.figure(figsize=(10, 6))
-        plt.plot(
-            distances,
-            sensor_readings,
-            label="Original Readings",
-            marker="o",
-            linestyle="--",
-        )
-        plt.plot(
-            distances,
-            offset_reduced_readings,
-            label="Offset Reduced",
-            marker="x",
-            linestyle="-",
-        )
-
-        # Add labels, title, and legend        plt.xlabel("Distance (mm)")
-        plt.ylabel("Sensor Reading")
-        plt.title("Non-Linearity After Offset Reduction")
-        plt.legend()
-        plt.grid(True)
-
-        # Show the plot
-        print("DEBUG: Displaying plot.")
-        plt.show()
-
     def plot_nonlinearity_comparison_with_offset_reduction(self):
-        """
-        Plot the non-linearity (error) versus distance for each misposition,
-        with offsets reduced to enable better comparison of the patterns.
-        """
-        if not self.calibrations or not self.errors:
-            print("No calibration data available for plotting.")
+        """Plot comparison showing how offset reduction affects non-linearity patterns"""
+        if not self.calibrations:
+            print("No calibration data available for comparison plotting.")
             return
 
         sensor_display_name = getattr(self, "sensor_name", self.sheet_name)
 
-        # Create a figure with appropriate size
-        fig, ax = plt.subplots(figsize=(14, 8))
+        fig, ax = plt.subplots(1, 1, figsize=(16, 10))
 
-        # Define a set of distinct colors for better differentiation
+        # Define distinct colors and markers for better visibility
         distinct_colors = [
-            "#e6194B",  # Red
-            "#3cb44b",  # Green
-            "#4363d8",  # Blue
-            "#f58231",  # Orange
-            "#911eb4",  # Purple
-            "#42d4f4",  # Cyan
-            "#f032e6",  # Magenta
-            "#ffe119",  # Yellow
-            "#bfef45",  # Lime
-            "#fabed4",  # Pink
-            "#000075",  # Navy
+            "#e6194B",
+            "#3cb44b",
+            "#4363d8",
+            "#f58231",
+            "#911eb4",
+            "#42d4f4",
+            "#f032e6",
+            "#ffe119",
+            "#bfef45",
+            "#fabed4",
+            "#000075",
         ]
-
-        # Define distinct markers
         markers = ["o", "s", "^", "D", "v", "*", "p", "h", "X", "+"]
 
-        # Get the sorted list of calibration names
+        # Get sorted calibration names by shift value
         calib_names = sorted(
             self.calibrations.keys(),
             key=lambda x: (
@@ -1064,195 +938,576 @@ class SensorCalibrationAnalyzer:
             ),
         )
 
-        # Plot each calibration's errors vs distance
+        # Plot each calibration's offset-reduced errors
         for idx, calib_name in enumerate(calib_names):
             if calib_name not in self.errors:
                 continue
 
-            # Get the errors and distances
-            if "adjusted_errors" in self.errors[calib_name]:
-                # Use already calculated adjusted errors
-                offset_reduced_errors = self.errors[calib_name]["adjusted_errors"]
-                distances = self.errors[calib_name]["true_distances"]
-                mean_error = self.errors[calib_name].get("mean_original_error", 0)
-            else:
-                # Calculate on the fly if not already done
-                errors = self.errors[calib_name]
-                distances = self.data["distance"].values
-                mean_error = np.mean(errors)
-                offset_reduced_errors = errors - mean_error
+            errors = self.errors[calib_name]
+            distances = self.data["distance"].values
+            mean_error = np.mean(errors)
+            offset_reduced_errors = errors - mean_error
 
-            # Extract the shift value from the calibration name
+            # Extract shift value for the label
             shift_value = int(calib_name.split("_")[1].replace("um", ""))
 
-            # Plot with distinct colors and markers
             ax.plot(
                 distances,
                 offset_reduced_errors,
                 linewidth=2,
                 marker=markers[idx % len(markers)],
-                markersize=6,
+                markersize=4,
                 alpha=0.8,
                 color=distinct_colors[idx % len(distinct_colors)],
                 label=f"{shift_value:+d}μm (Offset: {mean_error:.3f}mm)",
-            )  # Add labels and title
+            )
+
+        # Add reference line at y=0
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+
         ax.set_xlabel("Distance (mm)", fontsize=12)
         ax.set_ylabel("Offset-Reduced Error (mm)", fontsize=12)
         ax.set_title(
             f"Non-Linearity Comparison After Offset Reduction - {sensor_display_name}",
             fontsize=14,
         )
-
-        # Add grid and legend
         ax.grid(True, linestyle="--", alpha=0.7)
-        ax.legend(
-            title="Misposition", loc="upper right", fontsize=10, title_fontsize=11
-        )
-
-        # Add reference line at y=0
-        ax.axhline(
-            y=0, color="k", linestyle="--", alpha=0.5
-        )  # Set y-axis limits for better visualization
-        try:
-            max_error = max(
-                [
-                    max(abs(self.errors[c] - np.mean(self.errors[c])))
-                    for c in calib_names
-                    if c in self.errors
-                ]
-            )
-            ax.set_ylim(-max_error * 1.1, max_error * 1.1)
-        except (ValueError, TypeError):
-            # In case of errors calculating max_error, use automatic scaling
-            pass
+        ax.legend(title="Misposition", fontsize=10, title_fontsize=11)
 
         plt.tight_layout()
         plt.show()
 
-    def plot_calibrated_nonlinearity_without_bias(self):
-        """
-        Plot the non-linearity (error) vs. true distance for each calibration after removing the offset (bias).
-        This allows better comparison of the actual non-linearity patterns between different calibrations.
-        """
-        if not self.calibrations or not self.errors:
-            print(
-                "No calibration data available. Run perform_calibrations() and calculate_errors() first."
-            )
+    def plot_nonlinearity_heatmap(all_sensor_analyzers):
+        """Create a heatmap showing non-linearity scores for all sensors vs calibration shifts"""
+        if not all_sensor_analyzers:
+            print("No sensor data available for heatmap.")
             return
 
-        fig, ax = plt.subplots(figsize=(12, 8))
+        # Collect data for heatmap
+        sensor_names = []
+        all_shifts = set()
 
-        # Define a set of distinct colors for better differentiation
-        distinct_colors = [
-            "#e6194B",  # Red
-            "#3cb44b",  # Green
-            "#4363d8",  # Blue
-            "#f58231",  # Orange
-            "#911eb4",  # Purple
-            "#42d4f4",  # Cyan
-            "#f032e6",  # Magenta
-            "#ffe119",  # Yellow
-            "#bfef45",  # Lime
-            "#fabed4",  # Pink
-            "#000075",  # Navy
-        ]
+        # First pass: collect all unique shifts and sensor names
+        for analyzer in all_sensor_analyzers:
+            sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+            sensor_names.append(sensor_name)
 
-        # Define distinct markers
-        markers = ["o", "s", "^", "D", "v", "*", "p", "h", "X", "+"]
+            for name in analyzer.adjusted_errors.keys():
+                try:
+                    shift_str = name.split("_")[1].replace("um", "")
+                    shift_um = float(shift_str)
+                    all_shifts.add(shift_um)
+                except (IndexError, ValueError):
+                    continue
 
-        # List to store calibration names for ordered plotting
-        calib_list = sorted(
-            self.calibrations.keys(),
-            key=lambda x: int(x.split("_")[1].replace("um", "")),
-        )
+        # Sort shifts for consistent ordering
+        sorted_shifts = sorted(all_shifts)
 
-        # For each calibration in order
-        for i, calib_name in enumerate(calib_list):
-            if (
-                calib_name in self.errors
-                and "adjusted_errors" in self.errors[calib_name]
-            ):
-                # Get the true distances and errors
-                true_distances = self.errors[calib_name]["true_distances"]
-                adj_errors = self.errors[calib_name]["adjusted_errors"]
+        # Create matrix for heatmap data
+        heatmap_data = np.full((len(sensor_names), len(sorted_shifts)), np.nan)
 
-                # Extract the shift value from the calibration name
-                shift_value = int(calib_name.split("_")[1].replace("um", ""))
+        # Second pass: fill the matrix with non-linearity scores
+        for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+            for name, adj_errors in analyzer.adjusted_errors.items():
+                try:
+                    shift_str = name.split("_")[1].replace("um", "")
+                    shift_um = float(shift_str)
+                    shift_idx = sorted_shifts.index(shift_um)
 
-                # Get the mean original error (offset)
-                offset = self.errors[calib_name].get("mean_original_error", 0)
+                    # Calculate non-linearity (RMS of adjusted errors)
+                    nonlinearity = np.sqrt(np.nanmean(adj_errors**2))
+                    heatmap_data[sensor_idx, shift_idx] = nonlinearity
 
-                # Plot the adjusted errors (non-linearity without bias)
-                ax.plot(
-                    true_distances,
-                    adj_errors,
-                    label=f"{shift_value:+d}μm (Offset: {offset:.3f}mm)",
-                    color=distinct_colors[i % len(distinct_colors)],
-                    linewidth=2,
-                    marker=markers[i % len(markers)],
-                    markersize=6,
-                    alpha=0.8,
-                )
+                except (IndexError, ValueError):
+                    continue
 
-        # Add grid, labels, title, and legend
-        ax.grid(True, linestyle="--", alpha=0.7)
-        ax.set_xlabel("Distance (mm)", fontsize=12)
-        ax.set_ylabel("Non-Linearity after Bias Removal (mm)", fontsize=12)
+        # Create the heatmap
+        fig, ax = plt.subplots(figsize=(16, 8))
+        
+        # Create heatmap with intuitive colormap (green=low/good, red=high/bad)
+        im = ax.imshow(heatmap_data, cmap='RdYlGn_r', aspect='auto', interpolation='nearest')
+        
+        # Set ticks and labels
+        ax.set_xticks(range(len(sorted_shifts)))
+        ax.set_xticklabels([f"{int(shift):+d}" for shift in sorted_shifts], rotation=45)
+        ax.set_yticks(range(len(sensor_names)))
+        ax.set_yticklabels(sensor_names)
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Non-Linearity (RMS Adjusted Error, mm)', fontsize=12)
+        
+        # Add value annotations on heatmap with adaptive text color
+        for i in range(len(sensor_names)):
+            for j in range(len(sorted_shifts)):
+                if not np.isnan(heatmap_data[i, j]):
+                    # Use black text for better readability on the RdYlGn_r colormap
+                    text = ax.text(j, i, f'{heatmap_data[i, j]:.3f}',
+                                 ha="center", va="center", color="black", fontsize=9, fontweight='bold')
 
-        # Add the sensor name to the title if available
-        if hasattr(self, "sensor_name"):
-            ax.set_title(
-                f"Non-Linearity Comparison After Offset Reduction - {self.sensor_name}",
-                fontsize=14,
-            )
-        else:
-            ax.set_title("Non-Linearity Comparison After Offset Reduction", fontsize=14)
-
-        # Add legend with smaller font size
-        ax.legend(
-            fontsize=10, loc="upper right", title="Misposition", title_fontsize=11
-        )
-
-        # Add zero line for reference
-        ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+        # Labels and title
+        ax.set_xlabel('Calibration Misposition (μm)', fontsize=12)
+        ax.set_ylabel('ROS Sensors', fontsize=12)
+        ax.set_title('Non-Linearity Heatmap - All ROS Sensors vs Calibration Misposition', fontsize=14)
+        
+        # Add grid
+        ax.set_xticks(np.arange(len(sorted_shifts))-0.5, minor=True)
+        ax.set_yticks(np.arange(len(sensor_names))-0.5, minor=True)
+        ax.grid(which="minor", color="white", linestyle='-', linewidth=2)
+        ax.tick_params(which="minor", size=0)
 
         plt.tight_layout()
         plt.show()
+        
+        # Print summary statistics
+        print(f"\n=== NON-LINEARITY HEATMAP SUMMARY ===")
+        print(f"Sensors analyzed: {len(sensor_names)}")
+        print(f"Calibration shifts: {len(sorted_shifts)} (from {int(min(sorted_shifts))}μm to {int(max(sorted_shifts))}μm)")
+        
+        # Find best and worst performing sensors
+        sensor_avg_nonlinearity = np.nanmean(heatmap_data, axis=1)
+        best_sensor_idx = np.nanargmin(sensor_avg_nonlinearity)
+        worst_sensor_idx = np.nanargmax(sensor_avg_nonlinearity)
+        
+        print(f"\nSensor Performance Summary:")
+        print(f"Best performing sensor: {sensor_names[best_sensor_idx]} (avg non-linearity: {sensor_avg_nonlinearity[best_sensor_idx]:.4f}mm)")
+        print(f"Worst performing sensor: {sensor_names[worst_sensor_idx]} (avg non-linearity: {sensor_avg_nonlinearity[worst_sensor_idx]:.4f}mm)")
+        
+        # Find best and worst calibration positions
+        position_avg_nonlinearity = np.nanmean(heatmap_data, axis=0)
+        best_position_idx = np.nanargmin(position_avg_nonlinearity)
+        worst_position_idx = np.nanargmax(position_avg_nonlinearity)
+        
+        print(f"\nCalibration Position Performance Summary:")
+        print(f"Best position: {int(sorted_shifts[best_position_idx]):+d}μm (avg non-linearity: {position_avg_nonlinearity[best_position_idx]:.4f}mm)")
+        print(f"Worst position: {int(sorted_shifts[worst_position_idx]):+d}μm (avg non-linearity: {position_avg_nonlinearity[worst_position_idx]:.4f}mm)")
 
 
-def get_raw_units_info(excel_file_path, sheet_name):
-    """
-    Extract unit information from raw data sheets.
-    Returns list of dictionaries with unit info.
-    """
-    print(
-        f"DEBUG: get_raw_units_info CALLED for file='{excel_file_path}', sheet='{sheet_name}'"
-    )  # DEBUG
-    try:
-        df_raw = pd.read_excel(excel_file_path, sheet_name=sheet_name)
+# Add these functions right after the class definition and before the if __name__ == "__main__": section
 
-        units_info = []
-        if len(df_raw) > 1:  # Need at least 2 rows for header
-            for col_idx in range(1, min(5, df_raw.shape[1])):  # Columns B-E
-                col_letter = chr(ord("A") + col_idx)
-                sensor_name = str(df_raw.iloc[1, col_idx])  # Row 2
-                units_info.append(
-                    {"name": sensor_name, "sheet": sheet_name, "column": col_letter}
-                )
+def plot_all_sensors_raw_data(sensor_data_list):
+    """Plot raw data for all sensors on one combined graph"""
+    if not sensor_data_list:
+        print("No sensor data available for plotting.")
+        return
 
-        return units_info
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
 
-    except FileNotFoundError:
-        print(f"ERROR: File not found: {excel_file_path}")
-        return []
-    except ValueError as ve:
-        print(f"ERROR: Sheet '{sheet_name}' not found in {excel_file_path}")
-        return []
-    except Exception as e:
-        print(f"ERROR in get_raw_units_info: {e}")
-        return []
+    # Define colors for different sensors
+    colors = ["blue", "red", "green", "orange", "purple", "brown", "pink", "gray"]
+
+    for i, sensor_data in enumerate(sensor_data_list):
+        color = colors[i % len(colors)]
+        sensor_name = sensor_data["sensor_name"]
+
+        # Plot raw data as scatter
+        ax.scatter(
+            sensor_data["distance"],
+            sensor_data["sensor_reading"],
+            c=color,
+            s=20,
+            alpha=0.6,
+            label=f"{sensor_name} - Raw Data",
+            zorder=3,
+        )
+
+        # Create interpolation curve for visualization
+        distance_range = np.linspace(
+            sensor_data["distance"].min(), sensor_data["distance"].max(), 500
+        )
+
+        # Ensure data is sorted for interpolation
+        sorted_indices = np.argsort(sensor_data["distance"])
+        xp = sensor_data["distance"].iloc[sorted_indices].values
+        fp = sensor_data["sensor_reading"].iloc[sorted_indices].values
+
+        interpolated_curve = np.interp(distance_range, xp, fp)
+        ax.plot(
+            distance_range,
+            interpolated_curve,
+            color=color,
+            linewidth=2,
+            alpha=0.8,
+            linestyle="-",
+            label=f"{sensor_name} - Interpolation",
+            zorder=2,
+        )
+
+    ax.set_xlabel("True Distance (mm)", fontsize=12)
+    ax.set_ylabel("Sensor Reading", fontsize=12)
+    ax.set_title("Raw Data and Interpolation Overview - All ROS Sensors", fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9, loc="best")
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_predicted_vs_true_all_sensors(all_sensor_analyzers):
+    """Plot predicted vs true distance - 4 subplots, one per sensor"""
+    if not all_sensor_analyzers:
+        print("No sensor data available for plotting.")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+    axes = axes.flatten()
+    
+    # Use colormap for different calibrations
+    num_calibrations = len(next(iter(all_sensor_analyzers[0].calibrations.keys() if all_sensor_analyzers else []), []))
+    colors = plt.cm.nipy_spectral(np.linspace(0, 1, max(10, num_calibrations)))
+
+    for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+        if sensor_idx >= 4:  # Only handle 4 sensors
+            break
+            
+        ax = axes[sensor_idx]
+        sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+        
+        # Add perfect calibration line
+        ax.plot([0, 4], [0, 4], "k--", alpha=0.5, linewidth=2, label="Perfect Calibration (y=x)")
+        
+        # Plot all calibrations for this sensor
+        for i, (name, calib_data) in enumerate(analyzer.calibrations.items()):
+            color = colors[i % len(colors)]
+            params = calib_data["params"]
+
+            # Calculate predicted distances for all sensor readings
+            predicted_distances = []
+            for sensor_reading in analyzer.data["sensor_reading"]:
+                pred_dist = analyzer.calculate_distance(sensor_reading, params)
+                predicted_distances.append(pred_dist)
+
+            ax.plot(
+                analyzer.data["distance"],  # True distance (x-axis)
+                predicted_distances,  # Predicted distance (y-axis)
+                color=color,
+                label=name,
+                linewidth=1.5,
+                alpha=0.8,
+            )
+
+        ax.set_xlabel("True Distance (mm)")
+        ax.set_ylabel("Predicted Distance (mm)")
+        ax.set_title(f"Predicted vs True Distance - {sensor_name}")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    
+    # Hide unused subplots
+    for i in range(len(all_sensor_analyzers), 4):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_prediction_errors_all_sensors(all_sensor_analyzers):
+    """Plot prediction errors - 4 subplots, one per sensor"""
+    if not all_sensor_analyzers:
+        print("No sensor data available for plotting.")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+    axes = axes.flatten()
+    
+    # Use colormap for different calibrations
+    num_calibrations = len(next(iter(all_sensor_analyzers[0].calibrations.keys() if all_sensor_analyzers else []), []))
+    colors = plt.cm.nipy_spectral(np.linspace(0, 1, max(10, num_calibrations)))
+
+    for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+        if sensor_idx >= 4:  # Only handle 4 sensors
+            break
+            
+        ax = axes[sensor_idx]
+        sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+        
+        # Plot all prediction errors for this sensor
+        for i, (name, errors_arr) in enumerate(analyzer.errors.items()):
+            color = colors[i % len(colors)]
+            ax.plot(
+                analyzer.data["distance"],  # True distance (x-axis)
+                errors_arr,  # Predicted - True distance (y-axis)
+                color=color,
+                label=name,
+                linewidth=1.5,
+                alpha=0.8,
+            )
+
+        # Add zero error reference line
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.5, linewidth=1)
+        
+        ax.set_xlabel("True Distance (mm)")
+        ax.set_ylabel("Prediction Error (mm)")
+        ax.set_title(f"Prediction Error vs True Distance - {sensor_name}")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    
+    # Hide unused subplots
+    for i in range(len(all_sensor_analyzers), 4):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_nonlinearity_vs_shift_all_sensors(all_sensor_analyzers):
+    """Plot non-linearity vs calibration shift - 4 subplots, one per sensor"""
+    if not all_sensor_analyzers:
+        print("No sensor data available for plotting.")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+    axes = axes.flatten()
+
+    for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+        if sensor_idx >= 4:  # Only handle 4 sensors
+            break
+            
+        ax = axes[sensor_idx]
+        sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+        
+        # Calculate non-linearity for each shift
+        shifts_um = []
+        nonlinearity_all = []
+        nonlinearity_1_3mm = []
+        
+        range_mask_1_3mm = (analyzer.data["distance"] >= 1.0) & (analyzer.data["distance"] <= 3.0)
+
+        for name, adj_errors in analyzer.adjusted_errors.items():
+            try:
+                shift_str = name.split("_")[1].replace("um", "")
+                shift_um = float(shift_str)
+                shifts_um.append(shift_um)
+                
+                # All data range
+                nonlinearity = np.sqrt(np.nanmean(adj_errors**2))
+                nonlinearity_all.append(nonlinearity)
+                
+                # 1-3mm range
+                adj_errors_1_3mm = adj_errors[range_mask_1_3mm]
+                if len(adj_errors_1_3mm) > 0:
+                    nonlinearity_1_3mm.append(np.sqrt(np.nanmean(adj_errors_1_3mm**2)))
+                else:
+                    nonlinearity_1_3mm.append(0)
+                    
+            except (IndexError, ValueError):
+                continue
+
+        if shifts_um:
+            # Sort by shift for proper line plotting
+            sorted_indices = np.argsort(shifts_um)
+            shifts_sorted = [shifts_um[idx] for idx in sorted_indices]
+            nonlinearity_all_sorted = [nonlinearity_all[idx] for idx in sorted_indices]
+            nonlinearity_1_3mm_sorted = [nonlinearity_1_3mm[idx] for idx in sorted_indices]
+            
+            # Plot both datasets
+            ax.plot(
+                shifts_sorted,
+                nonlinearity_all_sorted,
+                "o-",
+                markersize=6,
+                linewidth=2,
+                alpha=0.8,
+                label="All Data Range",
+            )
+            ax.plot(
+                shifts_sorted,
+                nonlinearity_1_3mm_sorted,
+                "s-",
+                markersize=6,
+                linewidth=2,
+                alpha=0.8,
+                label="1-3mm Range",
+            )
+
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.3)
+        ax.axvline(x=0, color="k", linestyle="--", alpha=0.3)
+        ax.set_xlabel("Calibration Misposition (μm)")
+        ax.set_ylabel("Non-Linearity (RMS Adjusted Error, mm)")
+        ax.set_title(f"Non-Linearity vs Calibration Misposition - {sensor_name}")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    
+    # Hide unused subplots
+    for i in range(len(all_sensor_analyzers), 4):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_offset_reduced_errors_all_sensors(all_sensor_analyzers):
+    """Plot offset-reduced errors - 4 subplots, one per sensor"""
+    if not all_sensor_analyzers:
+        print("No sensor data available for plotting.")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+    axes = axes.flatten()
+    
+    # Define distinct colors and markers
+    distinct_colors = [
+        "#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4", 
+        "#42d4f4", "#f032e6", "#ffe119", "#bfef45", "#fabed4", "#000075"
+    ]
+    markers = ["o", "s", "^", "D", "v", "*", "p", "h", "X", "+"]
+
+    for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+        if sensor_idx >= 4:  # Only handle 4 sensors
+            break
+            
+        ax = axes[sensor_idx]
+        sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+        
+        # Get sorted calibration names
+        calib_names = sorted(
+            analyzer.calibrations.keys(),
+            key=lambda x: (float(x.split("_")[1].replace("um", "")) if "shift_" in x else 0)
+        )
+        
+        # Plot each calibration's offset-reduced errors
+        for idx, calib_name in enumerate(calib_names):
+            if calib_name not in analyzer.errors:
+                continue
+
+            errors = analyzer.errors[calib_name]
+            distances = analyzer.data["distance"].values
+            mean_error = np.mean(errors)
+            offset_reduced_errors = errors - mean_error
+
+            # Extract shift value
+            shift_value = int(calib_name.split("_")[1].replace("um", ""))
+
+            ax.plot(
+                distances,
+                offset_reduced_errors,
+                linewidth=2,
+                marker=markers[idx % len(markers)],
+                markersize=4,
+                alpha=0.8,
+                color=distinct_colors[idx % len(distinct_colors)],
+                label=f"{shift_value:+d}μm (Offset: {mean_error:.3f}mm)",
+            )
+
+        # Add reference line at y=0
+        ax.axhline(y=0, color="k", linestyle="--", alpha=0.5)
+        
+        ax.set_xlabel("Distance (mm)")
+        ax.set_ylabel("Offset-Reduced Error (mm)")
+        ax.set_title(f"Non-Linearity After Offset Reduction - {sensor_name}")
+        ax.grid(True, linestyle="--", alpha=0.7)
+        ax.legend(title="Misposition", fontsize=8, title_fontsize=9)
+    
+    # Hide unused subplots
+    for i in range(len(all_sensor_analyzers), 4):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_nonlinearity_heatmap(all_sensor_analyzers):
+    """Create a heatmap showing non-linearity scores for all sensors vs calibration shifts"""
+    if not all_sensor_analyzers:
+        print("No sensor data available for heatmap.")
+        return
+
+    # Collect data for heatmap
+    sensor_names = []
+    all_shifts = set()
+    
+    # First pass: collect all unique shifts and sensor names
+    for analyzer in all_sensor_analyzers:
+        sensor_name = getattr(analyzer, "sensor_name", analyzer.sheet_name)
+        sensor_names.append(sensor_name)
+        
+        for name in analyzer.adjusted_errors.keys():
+            try:
+                shift_str = name.split("_")[1].replace("um", "")
+                shift_um = float(shift_str)
+                all_shifts.add(shift_um)
+            except (IndexError, ValueError):
+                continue
+    
+    # Sort shifts for consistent ordering
+    sorted_shifts = sorted(all_shifts)
+    
+    # Create matrix for heatmap data
+    heatmap_data = np.full((len(sensor_names), len(sorted_shifts)), np.nan)
+    
+    # Second pass: fill the matrix with non-linearity scores
+    for sensor_idx, analyzer in enumerate(all_sensor_analyzers):
+        for name, adj_errors in analyzer.adjusted_errors.items():
+            try:
+                shift_str = name.split("_")[1].replace("um", "")
+                shift_um = float(shift_str)
+                shift_idx = sorted_shifts.index(shift_um)
+                
+                # Calculate non-linearity (RMS of adjusted errors)
+                nonlinearity = np.sqrt(np.nanmean(adj_errors**2))
+                heatmap_data[sensor_idx, shift_idx] = nonlinearity
+
+            except (IndexError, ValueError):
+                continue
+    
+    # Create the heatmap
+    fig, ax = plt.subplots(figsize=(16, 8))
+    
+    # Create heatmap with intuitive colormap (green=low/good, red=high/bad)
+    im = ax.imshow(heatmap_data, cmap='RdYlGn_r', aspect='auto', interpolation='nearest')
+    
+    # Set ticks and labels
+    ax.set_xticks(range(len(sorted_shifts)))
+    ax.set_xticklabels([f"{int(shift):+d}" for shift in sorted_shifts], rotation=45)
+    ax.set_yticks(range(len(sensor_names)))
+    ax.set_yticklabels(sensor_names)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Non-Linearity (RMS Adjusted Error, mm)', fontsize=12)
+    
+    # Add value annotations on heatmap with adaptive text color
+    for i in range(len(sensor_names)):
+        for j in range(len(sorted_shifts)):
+            if not np.isnan(heatmap_data[i, j]):
+                # Use black text for better readability on the RdYlGn_r colormap
+                text = ax.text(j, i, f'{heatmap_data[i, j]:.3f}',
+                             ha="center", va="center", color="black", fontsize=9, fontweight='bold')
+
+    # Labels and title
+    ax.set_xlabel('Calibration Misposition (μm)', fontsize=12)
+    ax.set_ylabel('ROS Sensors', fontsize=12)
+    ax.set_title('Non-Linearity Heatmap - All ROS Sensors vs Calibration Misposition', fontsize=14)
+    
+    # Add grid
+    ax.set_xticks(np.arange(len(sorted_shifts))-0.5, minor=True)
+    ax.set_yticks(np.arange(len(sensor_names))-0.5, minor=True)
+    ax.grid(which="minor", color="white", linestyle='-', linewidth=2)
+    ax.tick_params(which="minor", size=0)
+
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary statistics
+    print(f"\n=== NON-LINEARITY HEATMAP SUMMARY ===")
+    print(f"Sensors analyzed: {len(sensor_names)}")
+    print(f"Calibration shifts: {len(sorted_shifts)} (from {int(min(sorted_shifts))}μm to {int(max(sorted_shifts))}μm)")
+    
+    # Find best and worst performing sensors
+    sensor_avg_nonlinearity = np.nanmean(heatmap_data, axis=1)
+    best_sensor_idx = np.nanargmin(sensor_avg_nonlinearity)
+    worst_sensor_idx = np.nanargmax(sensor_avg_nonlinearity)
+    
+    print(f"\nSensor Performance Summary:")
+    print(f"Best performing sensor: {sensor_names[best_sensor_idx]} (avg non-linearity: {sensor_avg_nonlinearity[best_sensor_idx]:.4f}mm)")
+    print(f"Worst performing sensor: {sensor_names[worst_sensor_idx]} (avg non-linearity: {sensor_avg_nonlinearity[worst_sensor_idx]:.4f}mm)")
+    
+    # Find best and worst calibration positions
+    position_avg_nonlinearity = np.nanmean(heatmap_data, axis=0)
+    best_position_idx = np.nanargmin(position_avg_nonlinearity)
+    worst_position_idx = np.nanargmax(position_avg_nonlinearity)
+    
+    print(f"\nCalibration Position Performance Summary:")
+    print(f"Best position: {int(sorted_shifts[best_position_idx]):+d}μm (avg non-linearity: {position_avg_nonlinearity[best_position_idx]:.4f}mm)")
+    print(f"Worst position: {int(sorted_shifts[worst_position_idx]):+d}μm (avg non-linearity: {position_avg_nonlinearity[worst_position_idx]:.4f}mm)")
 
 
+# Replace the existing main execution section with this updated version:
 if __name__ == "__main__":
     # --- CONFIGURATION ---
     excel_file_path = r"C:\Users\geller\OneDrive - HP Inc\data\ROS\using ROS for cast iron\ROS vs PIP tsrget in Tamar104 press\summary.xlsx"
@@ -1319,21 +1574,22 @@ if __name__ == "__main__":
             "sheet": "all raw",
             "column": "B",
         },
-        # Commented out other channels for debugging
-        # {
-        #     "name": sensor_names["C"],  # Uses actual sensor name from Excel
-        #     "sheet": "all raw",
-        #     "column": "C",
-        # },
-        # {
-        #     "name": sensor_names["D"],  # Uses actual sensor name from Excel
-        #     "sheet": "all raw",
-        #     "column": "D",
-        # },        # {
-        #     "name": sensor_names["E"],  # Uses actual sensor name from Excel
-        #     "sheet": "all raw",
-        #     "column": "E",
-        # },
+        # Uncommented other channels for full analysis
+        {
+            "name": sensor_names["C"],  # Uses actual sensor name from Excel
+            "sheet": "all raw",
+            "column": "C",
+        },
+        {
+            "name": sensor_names["D"],  # Uses actual sensor name from Excel
+            "sheet": "all raw",
+            "column": "D",
+        },
+        {
+            "name": sensor_names["E"],  # Uses actual sensor name from Excel
+            "sheet": "all raw",
+            "column": "E",
+        },
     ]
 
     output_directory = r"C:\Users\geller\OneDrive - HP Inc\data\ROS\using ROS for cast iron\ROS vs PIP tsrget in Tamar104 press"
@@ -1390,69 +1646,116 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  Error reading file: {e}")
         exit(1)  # --- EXECUTION FOR EACH ROS CHANNEL ---
-    print(f"\n=== PROCESSING COLUMN B ONLY (DEBUG MODE) ===")
+    print(f"\n=== PROCESSING ALL ROS CHANNELS ===")
+
+    # Store sensor data for combined plotting
+    all_sensor_data = []
+
+    # Store all analyzer instances for comprehensive plotting
+    all_analyzers = []
+
     for i, ros_channel in enumerate(ros_channels, 1):
         channel_name = ros_channel["name"]
         sheet_name = ros_channel["sheet"]
         column = ros_channel["column"]
 
-        print(f"\n--- Sensor {i}/1: {channel_name} (Column {column}) ---")
+        print(
+            f"\n--- Sensor {i}/{len(ros_channels)}: {channel_name} (Column {column}) ---"
+        )
 
-        # Create an analyzer instance for this specific sensor column
         analyzer = SensorCalibrationAnalyzer(
             excel_file_path, sheet_name, unit_column=column
         )
 
         if analyzer.data is not None and not analyzer.data.empty:
-            # Data is already filtered to distance <= 4mm in load_data_with_unit_column
             print(f"Data points loaded: {len(analyzer.data)}")
 
             if len(analyzer.data) == 0:
                 print(f"No data available for {channel_name}. Skipping.")
                 continue
 
-            # Perform the complete analysis workflow
-            print(f"Starting calibration analysis for '{channel_name}'...")
+            # Store sensor data for combined plotting
+            sensor_plot_data = analyzer.plot_raw_and_interpolated_data()
 
-            # 1. Show raw data visualization
-            analyzer.plot_raw_and_interpolated_data()
+            all_sensor_data.append(sensor_plot_data)
 
-            # 2. Perform calibrations with different position shifts
+            # Store analyzer instance for later comprehensive plotting
+            all_analyzers.append(analyzer)
+
+            # --- CALIBRATION AND ERROR ANALYSIS ---
+            print(f"\n--- Calibration and Error Analysis for {channel_name} ---")
             analyzer.perform_calibrations()
-
-            # 3. Calculate calibration errors
             analyzer.calculate_errors()
 
-            # 4. Print results summary
-            analyzer.print_results()  # 5. Plot error analysis
-            analyzer.plot_errors()
+            # Print calibration results
+            analyzer.print_results()
 
-            # 6. Plot non-linearity vs position shift
-            analyzer.plot_nonlinearity_vs_shift()  # Note: Removed empty non-linearity with bias plot
+            # Save results to Excel
+            output_filename = f"{base_output_filename_prefix}_{channel_name}.xlsx"
+            analyzer.save_results(output_dir=output_directory, base_filename=output_filename)
 
-            # 8. Plot non-linearity comparison with offset reduction
-            print("\nGenerating non-linearity comparison with offset reduction plot...")
-            analyzer.plot_nonlinearity_comparison_with_offset_reduction()  # 9. Save results to Excel
-            safe_channel_name = "".join(c if c.isalnum() else "_" for c in channel_name)
-            channel_specific_base_filename = (
-                f"{base_output_filename_prefix}_{safe_channel_name}"
-            )
-            analyzer.save_results(
-                output_dir=output_directory,
-                base_filename=channel_specific_base_filename,
-            )
-            print(f"✓ Analysis complete for '{channel_name}'.")
-            print(
-                f"  Results saved: '{output_directory}/{channel_specific_base_filename}.xlsx'"
-            )
+            print(f"Results saved to: {output_filename}")
+
+            # --- INDIVIDUAL PLOTTING (COMMENTED OUT) ---
+            # # Plot raw data and interpolation
+            # plot_data = analyzer.plot_raw_and_interpolated_data()
+            # fig, ax = plt.subplots(figsize=(14, 8))
+            # ax.scatter(
+            #     plot_data["distance"],
+            #     plot_data["sensor_reading"],
+            #     c="blue",
+            #     s=20,
+            #     alpha=0.6,
+            #     label="Raw Data",
+            # )
+            # ax.plot(
+            #     plot_data["distance"],
+            #     np.interp(plot_data["distance"], plot_data["distance"], plot_data["sensor_reading"]),
+            #     color="blue",
+            #     linewidth=2,
+            #     alpha=0.8,
+            #     label="Interpolation",
+            # )
+            # ax.set_xlabel("True Distance (mm)", fontsize=12)
+            # ax.set_ylabel("Sensor Reading", fontsize=12)
+            # ax.set_title(f"Raw Data and Interpolation - {channel_name}", fontsize=14)
+            # ax.legend(fontsize=10)
+            # ax.grid(True, alpha=0.3)
+            # plt.tight_layout()
+            # plt.show()
+
+            # # Plot predicted vs true distance
+            # analyzer.plot_errors()
+
+            # # Plot non-linearity vs shift
+            # analyzer.plot_nonlinearity_vs_shift()
+
+            # # Plot non-linearity comparison with offset reduction
+            # analyzer.plot_nonlinearity_comparison_with_offset_reduction()
+
+            # --- INDIVIDUAL SENSOR ANALYSIS COMPLETE ---
         else:
-            print(f"❌ Could not load data for '{channel_name}'. Skipping.")
+            print(f"❌ Failed to load data for {channel_name}. Skipping.")
 
-    print(f"\n{'='*60}")
-    print("COLUMN B ANALYSIS COMPLETE (DEBUG MODE)")
-    print(f"{'='*60}")
-    print(f"Results saved in directory: {output_directory}")
-    print("Column B analysis includes:")
-    print("  - Calibration parameters (A, B, C coefficients)")
-    print("  - Error statistics and non-linearity analysis")
-    print("  - Detailed error data for each position shift")
+    # --- COMBINED ANALYSIS FOR ALL SENSORS ---
+    print(f"\n=== COMBINED ANALYSIS FOR ALL SENSORS ===")
+
+    # Plot all sensors raw data
+    plot_all_sensors_raw_data(all_sensor_data)
+
+    # Plot predicted vs true distance for all sensors
+    plot_predicted_vs_true_all_sensors(all_analyzers)
+
+    # Plot prediction errors for all sensors
+    plot_prediction_errors_all_sensors(all_analyzers)
+
+    # Plot non-linearity vs shift for all sensors
+    plot_nonlinearity_vs_shift_all_sensors(all_analyzers)
+
+    # Plot offset-reduced errors for all sensors
+    plot_offset_reduced_errors_all_sensors(all_analyzers)
+
+    # Plot non-linearity heatmap for all sensors
+    plot_nonlinearity_heatmap(all_analyzers)
+
+    print(f"\n=== ANALYSIS COMPLETE ===")
